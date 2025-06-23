@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Multi-Stream Camera Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .controls {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .add-stream-form {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .form-group label {
+            color: white;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+
+        .form-group input {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.9);
+            font-size: 1rem;
+            min-width: 200px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(45deg, #f44336, #d32f2f);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+        }
+
+        .btn-warning {
+            background: linear-gradient(45deg, #ff9800, #f57c00);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 152, 0, 0.4);
+        }
+
+        .streams-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stream-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .stream-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        }
+
+        .stream-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .stream-title {
+            color: white;
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .stream-status {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-active {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            border: 1px solid rgba(76, 175, 80, 0.3);
+        }
+
+        .status-inactive {
+            background: rgba(158, 158, 158, 0.2);
+            color: #9e9e9e;
+            border: 1px solid rgba(158, 158, 158, 0.3);
+        }
+
+        .stream-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .info-item {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9rem;
+        }
+
+        .info-label {
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .stream-video {
+            width: 100%;
+            height: 300px;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 15px;
+        }
+
+        .stream-video img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .video-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 1.1rem;
+        }
+
+        .stream-controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 0.9rem;
+        }
+
+        .stats-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .stats-title {
+            color: white;
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stat-value {
+            color: white;
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .streams-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .add-stream-form {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .form-group input {
+                min-width: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>ESP32 Multi-Stream Camera Dashboard</h1>
+            <p>Monitor and control multiple ESP32 camera streams in real-time</p>
+        </div>
+
+        <div class="controls">
+            <h3 style="color: white; margin-bottom: 15px;">Add New Camera Stream</h3>
+            <form class="add-stream-form" id="addStreamForm">
+                <div class="form-group">
+                    <label for="streamName">Stream Name</label>
+                    <input type="text" id="streamName" placeholder="e.g., Front Door Camera" required>
+                </div>
+                <div class="form-group">
+                    <label for="ipAddress">IP Address</label>
+                    <input type="text" id="ipAddress" placeholder="e.g., 192.168.1.100" required>
+                </div>
+                <div class="form-group">
+                    <label for="port">Port</label>
+                    <input type="number" id="port" value="80" min="1" max="65535">
+                </div>
+                <button type="submit" class="btn btn-primary">Add Stream</button>
+            </form>
+        </div>
+
+        <div class="streams-grid" id="streamsGrid">
+            <!-- Stream cards will be dynamically added here -->
+        </div>
+
+        <div class="stats-panel">
+            <h3 class="stats-title">System Statistics</h3>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="totalStreams">0</div>
+                    <div class="stat-label">Total Streams</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="activeStreams">0</div>
+                    <div class="stat-label">Active Streams</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="totalClients">0</div>
+                    <div class="stat-label">Connected Clients</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="totalFrames">0</div>
+                    <div class="stat-label">Total Frames</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        
+        // Global variables
+        let streams = {};
+        let currentStreams = {};
+
+        // DOM elements
+        const streamsGrid = document.getElementById('streamsGrid');
+        const addStreamForm = document.getElementById('addStreamForm');
+
+        // Initialize the dashboard
+        async function initDashboard() {
+            await loadStreams();
+            updateStats();
+        }
+
+        // Load all streams from the server
+        async function loadStreams() {
+            try {
+                const response = await fetch('/api/streams');
+                const streamsData = await response.json();
+                
+                streams = {};
+                streamsData.forEach(stream => {
+                    streams[stream.name] = stream;
+                });
+                
+                renderStreams();
+            } catch (error) {
+                console.error('Error loading streams:', error);
+            }
+        }
+
+        // Render all streams in the grid
+        function renderStreams() {
+            streamsGrid.innerHTML = '';
+            
+            Object.values(streams).forEach(stream => {
+                const streamCard = createStreamCard(stream);
+                streamsGrid.appendChild(streamCard);
+            });
+        }
+
+        // Create a stream card element
+        function createStreamCard(stream) {
+            const card = document.createElement('div');
+            card.className = 'stream-card';
+            card.id = `stream-${stream.name.replace(/\s+/g, '-')}`;
+            
+            card.innerHTML = `
+                <div class="stream-header">
+                    <h3 class="stream-title">${stream.name}</h3>
+                    <span class="stream-status ${stream.is_active ? 'status-active' : 'status-inactive'}">
+                        ${stream.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                </div>
+                
+                <div class="stream-info">
+                    <div class="info-item">
+                        <span class="info-label">IP:</span> ${stream.ip_address}:${stream.port}
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">FPS:</span> ${stream.fps.toFixed(1)}
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Frames:</span> ${stream.frame_count}
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Clients:</span> ${stream.connected_clients}
+                    </div>
+                </div>
+                
+                <div class="stream-video">
+                    <img id="video-${stream.name.replace(/\s+/g, '-')}" 
+                         src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjMwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iI2NjYyIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPk5vIHZpZGVvIHN0cmVhbTwvdGV4dD48L3N2Zz4=" 
+                         alt="Camera Stream">
+                </div>
+                
+                <div class="stream-controls">
+                    <button class="btn btn-primary btn-small" onclick="startStream('${stream.name}')" 
+                            ${stream.is_active ? 'disabled' : ''}>
+                        Start Stream
+                    </button>
+                    <button class="btn btn-warning btn-small" onclick="stopStream('${stream.name}')" 
+                            ${!stream.is_active ? 'disabled' : ''}>
+                        Stop Stream
+                    </button>
+                    <button class="btn btn-primary btn-small" onclick="takeSnapshot('${stream.name}')">
+                        Snapshot
+                    </button>
+                    <button class="btn btn-danger btn-small" onclick="removeStream('${stream.name}')">
+                        Remove
+                    </button>
+                </div>
+            `;
+            
+            return card;
+        }
+
+        // Update stream card with new data
+        function updateStreamCard(stream) {
+            const cardId = `stream-${stream.name.replace(/\s+/g, '-')}`;
+            const card = document.getElementById(cardId);
+            
+            if (card) {
+                const statusElement = card.querySelector('.stream-status');
+                const fpsElement = card.querySelector('.stream-info .info-item:nth-child(2)');
+                const framesElement = card.querySelector('.stream-info .info-item:nth-child(3)');
+                const clientsElement = card.querySelector('.stream-info .info-item:nth-child(4)');
+                
+                statusElement.className = `stream-status ${stream.is_active ? 'status-active' : 'status-inactive'}`;
+                statusElement.textContent = stream.is_active ? 'Active' : 'Inactive';
+                
+                fpsElement.innerHTML = `<span class="info-label">FPS:</span> ${stream.fps.toFixed(1)}`;
+                framesElement.innerHTML = `<span class="info-label">Frames:</span> ${stream.frame_count}`;
+                clientsElement.innerHTML = `<span class="info-label">Clients:</span> ${stream.connected_clients}`;
+                
+                // Update button states
+                const startBtn = card.querySelector('button[onclick*="startStream"]');
+                const stopBtn = card.querySelector('button[onclick*="stopStream"]');
+                
+                startBtn.disabled = stream.is_active;
+                stopBtn.disabled = !stream.is_active;
+            }
+        }
+
+        // Update system statistics
+        function updateStats() {
+            const totalStreams = Object.keys(streams).length;
+            const activeStreams = Object.values(streams).filter(s => s.is_active).length;
+            const totalClients = Object.values(streams).reduce((sum, s) => sum + s.connected_clients, 0);
+            const totalFrames = Object.values(streams).reduce((sum, s) => sum + s.frame_count, 0);
+            
+            document.getElementById('totalStreams').textContent = totalStreams;
+            document.getElementById('activeStreams').textContent = activeStreams;
+            document.getElementById('totalClients').textContent = totalClients;
+            document.getElementById('totalFrames').textContent = totalFrames;
+        }
+
+        // Add new stream
+        addStreamForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = {
+                name: document.getElementById('streamName').value,
+                ip_address: document.getElementById('ipAddress').value,
+                port: parseInt(document.getElementById('port').value)
+            };
+            
+            try {
+                const response = await fetch('/api/streams', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                if (response.ok) {
+                    await loadStreams();
+                    addStreamForm.reset();
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error adding stream:', error);
+                alert('Error adding stream');
+            }
+        });
+
+        // Start stream
+        async function startStream(streamName) {
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}/start`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    await loadStreams();
+                    socket.emit('join_stream', { stream_name: streamName });
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error starting stream:', error);
+                alert('Error starting stream');
+            }
+        }
+
+        // Stop stream
+        async function stopStream(streamName) {
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}/stop`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    await loadStreams();
+                    socket.emit('leave_stream', { stream_name: streamName });
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error stopping stream:', error);
+                alert('Error stopping stream');
+            }
+        }
+
+        // Take snapshot
+        async function takeSnapshot(streamName) {
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}/snapshot`);
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Open in new tab
+                    window.open(url, '_blank');
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error taking snapshot:', error);
+                alert('Error taking snapshot');
+            }
+        }
+
+        // Remove stream
+        async function removeStream(streamName) {
+            if (!confirm(`Are you sure you want to remove the stream "${streamName}"?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    await loadStreams();
+                    socket.emit('leave_stream', { stream_name: streamName });
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error removing stream:', error);
+                alert('Error removing stream');
+            }
+        }
+
+        // Socket.IO event handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+        });
+
+        socket.on('frame', (data) => {
+            const streamName = data.stream_name;
+            const videoId = `video-${streamName.replace(/\s+/g, '-')}`;
+            const videoElement = document.getElementById(videoId);
+            
+            if (videoElement) {
+                videoElement.src = `data:image/jpeg;base64,${data.frame_data}`;
+            }
+            
+            // Update stream data
+            if (streams[streamName]) {
+                streams[streamName].frame_count = data.frame_count;
+                streams[streamName].last_frame_time = data.timestamp;
+                updateStreamCard(streams[streamName]);
+                updateStats();
+            }
+        });
+
+        // Periodic updates
+        setInterval(async () => {
+            await loadStreams();
+        }, 5000);
+
+        // Initialize dashboard
+        initDashboard();
+    </script>
+</body>
+</html> 
