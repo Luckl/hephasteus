@@ -3,18 +3,37 @@ import json
 import time
 import threading
 import requests
+import socket
+import logging
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import base64
+from flask_apscheduler import APScheduler
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
+
+# Flask-APScheduler configuration
+app.config['SCHEDULER_API_ENABLED'] = True
+app.config['SCHEDULER_TIMEZONE'] = 'UTC'
+
 socketio = SocketIO(app, cors_allowed_origins="*")
+scheduler = APScheduler()
+scheduler.init_app(app)
 
 # Global storage for camera streams
 camera_streams = {}
 stream_threads = {}
+discovery_running = False  # Add this global variable
 
 class CameraStream:
     def __init__(self, name, ip_address, port=80):
@@ -37,6 +56,89 @@ class CameraStream:
     
     def get_status_url(self):
         return f"{self.base_url}/status"
+
+def run_discovery():
+    """Scan for ESP32 cameras on the network"""
+    logger.info("Starting ESP32 camera discovery scan...")
+    
+    try:
+        # Create UDP socket for discovery
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discovery_socket:
+            discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            discovery_socket.bind(('', 8888))
+            discovery_socket.settimeout(2.0)  # 2 second timeout
+            
+            # Listen for a few seconds
+            start_time = time.time()
+            cameras_found = 0
+            
+            while time.time() - start_time < 3:  # Listen for 3 seconds
+                try:
+                    data, addr = discovery_socket.recvfrom(1024)
+                    message = data.decode('utf-8').strip()
+                    logger.debug(f"Received message: {message}")
+                    if message.startswith('ESP32_CAMERA:'):
+                        parts = message.split(':')
+                        if len(parts) >= 3:
+                            ip = parts[1]
+                            port = int(parts[2])
+                            
+                            # Generate camera name from IP
+                            camera_name = f"ESP32 Camera ({ip})"
+                            
+                            # Check if camera already exists
+                            if camera_name not in camera_streams:
+                                camera_streams[camera_name] = CameraStream(camera_name, ip, port)
+                                cameras_found += 1
+                                logger.info(f"Discovered new camera: {camera_name} at {ip}:{port}")
+                                
+                                # Emit discovery event to connected clients
+                                socketio.emit('camera_discovered', {
+                                    'name': camera_name,
+                                    'ip': ip,
+                                    'port': port,
+                                    'timestamp': datetime.now().isoformat()
+                                })
+                            else:
+                                # Update last seen time
+                                camera_streams[camera_name].discovered_time = datetime.now()
+                                logger.debug(f"Camera {camera_name} still alive")
+                                
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    logger.error(f"Discovery error: {e}")
+                    continue
+            
+            logger.info(f"Discovery scan completed. Found {cameras_found} new cameras.")
+                    
+    except Exception as e:
+        logger.error(f"Discovery socket error: {e}")
+
+def start_scheduler():
+    """Start the Flask-APScheduler with discovery job"""
+    global scheduler
+    
+    # Add the discovery job to run every 15 seconds
+    scheduler.add_job(
+        func=run_discovery,
+        trigger='interval',
+        seconds=15,
+        id='discovery_job',
+        name='ESP32 Camera Discovery',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True
+    )
+    
+    # Start the scheduler
+    scheduler.start()
+    logger.info("Flask-APScheduler started with discovery job (every 15 seconds)")
+    next_run = scheduler.get_job('discovery_job').next_run_time
+    logger.info(f"Next discovery run scheduled for: {next_run}")
+    
+    return scheduler
 
 @app.route('/')
 def index():
@@ -132,23 +234,23 @@ def get_snapshot(name):
     
     stream = camera_streams[name]
     try:
-        print(f"Attempting to get snapshot from {stream.get_snapshot_url()}")
+        logger.info(f"Attempting to get snapshot from {stream.get_snapshot_url()}")
         response = requests.get(stream.get_snapshot_url(), timeout=10)
-        print(f"Snapshot response status: {response.status_code}")
+        logger.debug(f"Snapshot response status: {response.status_code}")
         
         if response.status_code == 200:
             return Response(response.content, mimetype='image/jpeg')
         else:
-            print(f"Failed to capture snapshot: HTTP {response.status_code}")
+            logger.error(f"Failed to capture snapshot: HTTP {response.status_code}")
             return jsonify({'error': f'Failed to capture snapshot: HTTP {response.status_code}'}), 500
     except requests.exceptions.ConnectionError as e:
-        print(f"Connection error to {stream.ip_address}: {str(e)}")
+        logger.error(f"Connection error to {stream.ip_address}: {str(e)}")
         return jsonify({'error': f'Cannot connect to camera at {stream.ip_address}. Make sure the ESP32 is powered on and connected to the network.'}), 500
     except requests.exceptions.Timeout as e:
-        print(f"Timeout error to {stream.ip_address}: {str(e)}")
+        logger.error(f"Timeout error to {stream.ip_address}: {str(e)}")
         return jsonify({'error': f'Timeout connecting to camera at {stream.ip_address}'}), 500
     except Exception as e:
-        print(f"Error capturing snapshot from {stream.ip_address}: {str(e)}")
+        logger.error(f"Error capturing snapshot from {stream.ip_address}: {str(e)}")
         return jsonify({'error': f'Error capturing snapshot: {str(e)}'}), 500
 
 @app.route('/api/streams/<name>/status', methods=['GET'])
@@ -204,7 +306,7 @@ def stream_camera(name):
                         'frame_data': frame_data,
                         'timestamp': current_time.isoformat(),
                         'frame_count': stream.frame_count
-                    }, room=name)
+                    }, to=name)
                 
                 # Limit frame rate to prevent overwhelming the network
                 time.sleep(0.1)  # ~10 FPS
@@ -212,7 +314,7 @@ def stream_camera(name):
                 time.sleep(1)
                 
         except Exception as e:
-            print(f"Error streaming from {name}: {str(e)}")
+            logger.error(f"Error streaming from {name}: {str(e)}")
             time.sleep(2)
     
     # Clean up when stream stops
@@ -223,12 +325,12 @@ def stream_camera(name):
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
-    print(f"Client connected: {request.sid}")
+    logger.info(f"Client connected: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    print(f"Client disconnected: {request.sid}")
+    logger.info(f"Client disconnected: {request.sid}")
     # Remove client from all streams
     for stream in camera_streams.values():
         stream.connected_clients.discard(request.sid)
@@ -240,7 +342,7 @@ def handle_join_stream(data):
     if stream_name in camera_streams:
         join_room(stream_name)
         camera_streams[stream_name].connected_clients.add(request.sid)
-        print(f"Client {request.sid} joined stream {stream_name}")
+        logger.info(f"Client {request.sid} joined stream {stream_name}")
         
         # Send current frame if available
         stream = camera_streams[stream_name]
@@ -259,25 +361,30 @@ def handle_leave_stream(data):
     if stream_name in camera_streams:
         leave_room(stream_name)
         camera_streams[stream_name].connected_clients.discard(request.sid)
-        print(f"Client {request.sid} left stream {stream_name}")
+        logger.info(f"Client {request.sid} left stream {stream_name}")
 
 if __name__ == '__main__':
-    # Add default camera stream
-    camera_streams['ESP32 Camera'] = CameraStream('ESP32 Camera', '192.168.0.149', 80)
+    # Start the Flask-APScheduler with discovery job
+    scheduler_instance = start_scheduler()
     
-    print("ESP32 Multi-Stream Camera Server")
-    print("Available endpoints:")
-    print("  GET  /                    - Main dashboard")
-    print("  GET  /api/streams         - List all streams")
-    print("  POST /api/streams         - Add new stream")
-    print("  DELETE /api/streams/<name> - Remove stream")
-    print("  POST /api/streams/<name>/start - Start streaming")
-    print("  POST /api/streams/<name>/stop  - Stop streaming")
-    print("  GET  /api/streams/<name>/snapshot - Get snapshot")
-    print("  GET  /api/streams/<name>/status  - Get camera status")
-    print("\nExample ESP32 endpoints:")
-    print("  http://<esp32-ip>/capture  - Get JPEG snapshot")
-    print("  http://<esp32-ip>/stream   - Get MJPEG stream")
-    print("  http://<esp32-ip>/status   - Get camera status")
+    logger.info("ESP32 Multi-Stream Camera Server")
+    logger.info("Available endpoints:")
+    logger.info("  GET  /                    - Main dashboard")
+    logger.info("  GET  /api/streams         - List all streams")
+    logger.info("  POST /api/streams         - Add new stream")
+    logger.info("  DELETE /api/streams/<name> - Remove stream")
+    logger.info("  POST /api/streams/<name>/start - Start streaming")
+    logger.info("  POST /api/streams/<name>/stop  - Stop streaming")
+    logger.info("  GET  /api/streams/<name>/snapshot - Get snapshot")
+    logger.info("  GET  /api/streams/<name>/status  - Get camera status")
+    logger.info("Example ESP32 endpoints:")
+    logger.info("  http://<esp32-ip>/capture  - Get JPEG snapshot")
+    logger.info("  http://<esp32-ip>/stream   - Get MJPEG stream")
+    logger.info("  http://<esp32-ip>/status   - Get camera status")
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True) 
+    try:
+        socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    finally:
+        # Shutdown the scheduler when the app stops
+        logger.info("Shutting down scheduler...")
+        scheduler.shutdown() 

@@ -1,6 +1,8 @@
 #include "esp_camera.h"
 #include <WiFi.h>
-
+#include <AsyncUDP.h>
+#include "esp_timer.h"
+#include "esp_log.h"
 //
 // WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
 //            Ensure ESP32 Wrover Module or other board with PSRAM is selected
@@ -38,6 +40,44 @@
 // ===========================
 const char *ssid = "Reuth 1";
 const char *password = "followthewhiterabbit";
+
+static const char* TAG = "CAMERA_DISCOVERY";
+
+AsyncUDP udp;
+esp_timer_handle_t discovery_timer;
+
+// Discovery callback function
+void discovery_timer_callback(void* arg) {
+    String discoveryMsg = "ESP32_CAMERA:" + WiFi.localIP().toString() + ":80";
+    udp.broadcastTo(discoveryMsg.c_str(), 8888);
+    ESP_LOGI(TAG, "Broadcasting discovery: %s", discoveryMsg.c_str());
+}
+
+void setupDiscovery() {
+    // Configure the timer
+    esp_timer_create_args_t timer_args = {
+        .callback = &discovery_timer_callback,
+        .arg = NULL,
+        .name = "discovery_timer"
+    };
+    
+    // Create the timer
+    esp_err_t ret = esp_timer_create(&timer_args, &discovery_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create discovery timer: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+    // Start the timer to fire every 30 seconds (30,000,000 microseconds)
+    ret = esp_timer_start_periodic(discovery_timer, 30000000);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start discovery timer: %s", esp_err_to_name(ret));
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Discovery timer started successfully");
+    Serial.println("Discovery timer started successfully");
+}
 
 void startCameraServer();
 void setupLedFlash(int pin);
@@ -148,6 +188,13 @@ void setup() {
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
+
+  // Start UDP for discovery
+    if(udp.listen(8888)) {
+        Serial.println("UDP listening on port 8888");
+    }
+    
+    setupDiscovery();
 }
 
 void loop() {
