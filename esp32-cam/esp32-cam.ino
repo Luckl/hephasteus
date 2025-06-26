@@ -44,39 +44,39 @@ const char *password = "followthewhiterabbit";
 static const char* TAG = "CAMERA_DISCOVERY";
 
 AsyncUDP udp;
-esp_timer_handle_t discovery_timer;
-
-// Discovery callback function
-void discovery_timer_callback(void* arg) {
-    String discoveryMsg = "ESP32_CAMERA:" + WiFi.localIP().toString() + ":80";
-    udp.broadcastTo(discoveryMsg.c_str(), 8888);
-    ESP_LOGI(TAG, "Broadcasting discovery: %s", discoveryMsg.c_str());
-}
 
 void setupDiscovery() {
-    // Configure the timer
-    esp_timer_create_args_t timer_args = {
-        .callback = &discovery_timer_callback,
-        .arg = NULL,
-        .name = "discovery_timer"
-    };
-    
-    // Create the timer
-    esp_err_t ret = esp_timer_create(&timer_args, &discovery_timer);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create discovery timer: %s", esp_err_to_name(ret));
-        return;
+    // Start UDP listener on port 8888
+    if(udp.listen(8888)) {
+        Serial.println("UDP discovery listener started on port 8888");
+        ESP_LOGI(TAG, "UDP discovery listener started on port 8888");
+        
+        // Set up packet handler for discovery requests
+        udp.onPacket([](AsyncUDPPacket packet) {
+            String request = String((char*)packet.data());
+            request.trim(); // Remove any whitespace
+            
+            ESP_LOGI(TAG, "Received discovery request: '%s' from %s", request.c_str(), packet.remoteIP().toString().c_str());
+            Serial.printf("Received discovery request: '%s' from %s\n", request.c_str(), packet.remoteIP().toString().c_str());
+            
+            // Check if this is a discovery request
+            if (request == "DISCOVER_CAMERAS") {
+                // Send response with camera info
+                String response = "ESP32_CAMERA:" + WiFi.localIP().toString() + ":80";
+                
+                // Create AsyncUDPMessage and send response
+                AsyncUDPMessage message(response.length());
+                message.write((uint8_t*)response.c_str(), response.length());
+                udp.sendTo(message, packet.remoteIP(), 8888);
+                
+                ESP_LOGI(TAG, "Sent discovery response: %s to %s", response.c_str(), packet.remoteIP().toString().c_str());
+                Serial.printf("Sent discovery response: %s to %s\n", response.c_str(), packet.remoteIP().toString().c_str());
+            }
+        });
+    } else {
+        ESP_LOGE(TAG, "Failed to start UDP discovery listener");
+        Serial.println("Failed to start UDP discovery listener");
     }
-    
-    // Start the timer to fire every 30 seconds (30,000,000 microseconds)
-    ret = esp_timer_start_periodic(discovery_timer, 30000000);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start discovery timer: %s", esp_err_to_name(ret));
-        return;
-    }
-    
-    ESP_LOGI(TAG, "Discovery timer started successfully");
-    Serial.println("Discovery timer started successfully");
 }
 
 void startCameraServer();
@@ -190,10 +190,6 @@ void setup() {
   Serial.println("' to connect");
 
   // Start UDP for discovery
-    if(udp.listen(8888)) {
-        Serial.println("UDP listening on port 8888");
-    }
-    
     setupDiscovery();
 }
 

@@ -58,26 +58,34 @@ class CameraStream:
         return f"{self.base_url}/status"
 
 def run_discovery():
-    """Scan for ESP32 cameras on the network"""
+    """Scan for ESP32 cameras on the network using server-initiated discovery"""
     logger.info("Starting ESP32 camera discovery scan...")
     
     try:
-        # Create UDP socket for discovery
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discovery_socket:
-            discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            discovery_socket.bind(('', 8888))
-            discovery_socket.settimeout(2.0)  # 2 second timeout
+        # Create separate sockets for sending and receiving
+        send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        
+        recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        recv_socket.bind(('0.0.0.0', 8888))
+        recv_socket.settimeout(3.0)
+        try:
+            # Send discovery request to broadcast
+            discovery_request = "DISCOVER_CAMERAS"
+            broadcast_addr = ('255.255.255.255', 8888)
+            send_socket.sendto(discovery_request.encode('utf-8'), broadcast_addr)
+            logger.info(f"Sent discovery request: {discovery_request} to {broadcast_addr}")
             
-            # Listen for a few seconds
+            # Listen for responses
             start_time = time.time()
             cameras_found = 0
             
             while time.time() - start_time < 3:  # Listen for 3 seconds
                 try:
-                    data, addr = discovery_socket.recvfrom(1024)
+                    data, addr = recv_socket.recvfrom(1024)
                     message = data.decode('utf-8').strip()
-                    logger.debug(f"Received message: {message}")
+                    logger.info(f"Received response from {addr}: {message}")
+                    
                     if message.startswith('ESP32_CAMERA:'):
                         parts = message.split(':')
                         if len(parts) >= 3:
@@ -86,7 +94,8 @@ def run_discovery():
                             
                             # Generate camera name from IP
                             camera_name = f"ESP32 Camera ({ip})"
-                            
+                            logger.info(f"Discovered new camera: {camera_name} at {ip}:{port}")
+
                             # Check if camera already exists
                             if camera_name not in camera_streams:
                                 camera_streams[camera_name] = CameraStream(camera_name, ip, port)
@@ -103,9 +112,10 @@ def run_discovery():
                             else:
                                 # Update last seen time
                                 camera_streams[camera_name].discovered_time = datetime.now()
-                                logger.debug(f"Camera {camera_name} still alive")
+                                logger.info(f"Camera {camera_name} still alive")
                                 
                 except socket.timeout:
+                    logger.debug("Discovery timeout, continuing...")
                     continue
                 except Exception as e:
                     logger.error(f"Discovery error: {e}")
@@ -113,6 +123,10 @@ def run_discovery():
             
             logger.info(f"Discovery scan completed. Found {cameras_found} new cameras.")
                     
+        finally:
+            send_socket.close()
+            recv_socket.close()
+            
     except Exception as e:
         logger.error(f"Discovery socket error: {e}")
 
@@ -383,7 +397,7 @@ if __name__ == '__main__':
     logger.info("  http://<esp32-ip>/status   - Get camera status")
     
     try:
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
     finally:
         # Shutdown the scheduler when the app stops
         logger.info("Shutting down scheduler...")

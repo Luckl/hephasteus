@@ -3,8 +3,10 @@ services:
   esp32-server:
     build: .
     container_name: esp32-multistream-server
+    network_mode: host
     ports:
       - "5000:5000"
+      - "8888:8888/udp"  # Explicitly expose UDP discovery port
     volumes:
       - .:/app
     restart: unless-stopped 
