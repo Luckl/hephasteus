@@ -34,6 +34,12 @@ scheduler.init_app(app)
 camera_streams = {}
 stream_threads = {}
 discovery_running = False  # Add this global variable
+scheduler_initialized = False  # Add this flag to prevent multiple initializations
+
+# Global UDP listener for ESP32 responses
+udp_listener_socket = None
+udp_listener_thread = None
+udp_listener_running = False
 
 class CameraStream:
     def __init__(self, name, ip_address, port=80):
@@ -58,77 +64,29 @@ class CameraStream:
         return f"{self.base_url}/status"
 
 def run_discovery():
-    """Scan for ESP32 cameras on the network using server-initiated discovery"""
-    logger.info("Starting ESP32 camera discovery scan...")
+    """Broadcast discovery requests to ESP32 cameras"""
+    logger.info("Broadcasting ESP32 camera discovery request...")
     
     try:
-        # Create separate sockets for sending and receiving
-        send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # Create socket for broadcasting only
+        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Bind to a different port (8889) to avoid receiving our own broadcasts
+        broadcast_socket.bind(('0.0.0.0', 8889))
         
-        recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        recv_socket.bind(('0.0.0.0', 8888))
-        recv_socket.settimeout(3.0)
         try:
             # Send discovery request to broadcast
             discovery_request = "DISCOVER_CAMERAS"
-            broadcast_addr = ('255.255.255.255', 8888)
-            send_socket.sendto(discovery_request.encode('utf-8'), broadcast_addr)
+            broadcast_addr = ('255.255.255.255', 8888)  # ESP32s listen on 8888
+            broadcast_socket.sendto(discovery_request.encode('utf-8'), broadcast_addr)
             logger.info(f"Sent discovery request: {discovery_request} to {broadcast_addr}")
             
-            # Listen for responses
-            start_time = time.time()
-            cameras_found = 0
-            
-            while time.time() - start_time < 3:  # Listen for 3 seconds
-                try:
-                    data, addr = recv_socket.recvfrom(1024)
-                    message = data.decode('utf-8').strip()
-                    logger.info(f"Received response from {addr}: {message}")
-                    
-                    if message.startswith('ESP32_CAMERA:'):
-                        parts = message.split(':')
-                        if len(parts) >= 3:
-                            ip = parts[1]
-                            port = int(parts[2])
-                            
-                            # Generate camera name from IP
-                            camera_name = f"ESP32 Camera ({ip})"
-                            logger.info(f"Discovered new camera: {camera_name} at {ip}:{port}")
-
-                            # Check if camera already exists
-                            if camera_name not in camera_streams:
-                                camera_streams[camera_name] = CameraStream(camera_name, ip, port)
-                                cameras_found += 1
-                                logger.info(f"Discovered new camera: {camera_name} at {ip}:{port}")
-                                
-                                # Emit discovery event to connected clients
-                                socketio.emit('camera_discovered', {
-                                    'name': camera_name,
-                                    'ip': ip,
-                                    'port': port,
-                                    'timestamp': datetime.now().isoformat()
-                                })
-                            else:
-                                # Update last seen time
-                                camera_streams[camera_name].discovered_time = datetime.now()
-                                logger.info(f"Camera {camera_name} still alive")
-                                
-                except socket.timeout:
-                    logger.debug("Discovery timeout, continuing...")
-                    continue
-                except Exception as e:
-                    logger.error(f"Discovery error: {e}")
-                    continue
-            
-            logger.info(f"Discovery scan completed. Found {cameras_found} new cameras.")
-                    
         finally:
-            send_socket.close()
-            recv_socket.close()
+            broadcast_socket.close()
             
     except Exception as e:
-        logger.error(f"Discovery socket error: {e}")
+        logger.error(f"Discovery broadcast error: {e}")
 
 def start_scheduler():
     """Start the Flask-APScheduler with discovery job"""
@@ -377,7 +335,90 @@ def handle_leave_stream(data):
         camera_streams[stream_name].connected_clients.discard(request.sid)
         logger.info(f"Client {request.sid} left stream {stream_name}")
 
+def udp_listener_thread_func():
+    """Background thread function to continuously listen for ESP32 responses"""
+    global udp_listener_socket, udp_listener_running
+    
+    try:
+        # Create UDP socket for listening
+        udp_listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_listener_socket.bind(('0.0.0.0', 8888))
+        udp_listener_socket.settimeout(1.0)  # 1 second timeout for responsiveness
+        
+        logger.info("UDP listener started on port 8888")
+        
+        while udp_listener_running:
+            try:
+                data, addr = udp_listener_socket.recvfrom(1024)
+                message = data.decode('utf-8').strip()
+                logger.info(f"UDP listener received from {addr}: {message}")
+                
+                if message.startswith('ESP32_CAMERA:'):
+                    parts = message.split(':')
+                    if len(parts) >= 3:
+                        ip = parts[1]
+                        port = int(parts[2])
+                        
+                        # Generate camera name from IP
+                        camera_name = f"ESP32 Camera ({ip})"
+                        
+                        # Check if camera already exists
+                        if camera_name not in camera_streams:
+                            camera_streams[camera_name] = CameraStream(camera_name, ip, port)
+                            logger.info(f"Discovered new camera: {camera_name} at {ip}:{port}")
+                            
+                            # Emit discovery event to connected clients
+                            socketio.emit('camera_discovered', {
+                                'name': camera_name,
+                                'ip': ip,
+                                'port': port,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                        else:
+                            # Update last seen time
+                            camera_streams[camera_name].discovered_time = datetime.now()
+                            logger.debug(f"Camera {camera_name} still alive")
+                            
+            except socket.timeout:
+                continue  # Normal timeout, continue listening
+            except Exception as e:
+                logger.error(f"UDP listener error: {e}")
+                continue
+                
+    except Exception as e:
+        logger.error(f"Failed to start UDP listener: {e}")
+    finally:
+        if udp_listener_socket:
+            udp_listener_socket.close()
+            logger.info("UDP listener socket closed")
+
+def start_udp_listener():
+    """Start the continuous UDP listener thread"""
+    global udp_listener_thread, udp_listener_running
+    
+    if udp_listener_thread and udp_listener_thread.is_alive():
+        logger.info("UDP listener already running")
+        return
+    
+    udp_listener_running = True
+    udp_listener_thread = threading.Thread(target=udp_listener_thread_func, daemon=True)
+    udp_listener_thread.start()
+    logger.info("UDP listener thread started")
+
+def stop_udp_listener():
+    """Stop the continuous UDP listener thread"""
+    global udp_listener_running, udp_listener_socket
+    
+    udp_listener_running = False
+    if udp_listener_socket:
+        udp_listener_socket.close()
+    logger.info("UDP listener stopped")
+
 if __name__ == '__main__':
+    # Start the continuous UDP listener first
+    start_udp_listener()
+    
     # Start the Flask-APScheduler with discovery job
     scheduler_instance = start_scheduler()
     
@@ -397,8 +438,11 @@ if __name__ == '__main__':
     logger.info("  http://<esp32-ip>/status   - Get camera status")
     
     try:
+        # Disable debug mode to prevent application restarts that cause duplicate jobs
         socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
     finally:
-        # Shutdown the scheduler when the app stops
+        # Shutdown the scheduler and UDP listener when the app stops
         logger.info("Shutting down scheduler...")
-        scheduler.shutdown() 
+        scheduler.shutdown()
+        logger.info("Shutting down UDP listener...")
+        stop_udp_listener() 
