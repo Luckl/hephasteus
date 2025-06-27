@@ -58,7 +58,7 @@ class CameraStream:
         self.connected_clients = set()
         
     def get_stream_url(self):
-        return f"{self.base_url}/stream"
+        return f"http://{self.ip_address}:{self.port + 1}/stream"
     
     def get_snapshot_url(self):
         return f"{self.base_url}/capture"
@@ -234,7 +234,7 @@ def calculate_broadcast_address(ip, subnet_mask):
 
 def select_best_interface(interfaces):
     """Select the best interface for broadcasting to ESP32 devices"""
-    logger.info(f"Found {len(interfaces)} network interfaces to evaluate")
+    logger.debug(f"Found {len(interfaces)} network interfaces to evaluate")
     valid_interfaces = []
     
     for iface in interfaces:
@@ -266,7 +266,7 @@ def select_best_interface(interfaces):
         
         # Only include interfaces with broadcast address
         if 'broadcast' in iface:
-            logger.info(f"Valid interface: {iface['name']} - IP: {ip}, Broadcast: {iface['broadcast']}")
+            logger.debug(f"Valid interface: {iface['name']} - IP: {ip}, Broadcast: {iface['broadcast']}")
             valid_interfaces.append(iface)
     
     # Sort by preference: prefer interfaces with gateways (connected to router)
@@ -274,7 +274,7 @@ def select_best_interface(interfaces):
     
     if valid_interfaces:
         selected = valid_interfaces[0]
-        logger.info(f"Selected interface: {selected['name']} ({selected['ip']})")
+        logger.debug(f"Selected interface: {selected['name']} ({selected['ip']})")
         return selected
     
     logger.warning("No suitable network interfaces found")
@@ -282,11 +282,11 @@ def select_best_interface(interfaces):
 
 def run_discovery():
     """Broadcast discovery requests to ESP32 cameras"""
-    logger.info("Broadcasting ESP32 camera discovery request...")
+    logger.debug("Broadcasting ESP32 camera discovery request...")
     
     # Get all network interfaces
     interfaces = get_network_interfaces()
-    logger.info(f"Found {len(interfaces)} network interfaces")
+    logger.debug(f"Found {len(interfaces)} network interfaces")
     
     # Select the best interface
     selected_interface = select_best_interface(interfaces)
@@ -298,9 +298,9 @@ def run_discovery():
     network_ip = selected_interface['ip']
     broadcast_ip = selected_interface['broadcast']
     
-    logger.info(f"Selected interface: {selected_interface['name']}")
-    logger.info(f"Local IP: {network_ip}")
-    logger.info(f"Broadcast IP: {broadcast_ip}")
+    logger.debug(f"Selected interface: {selected_interface['name']}")
+    logger.debug(f"Local IP: {network_ip}")
+    logger.debug(f"Broadcast IP: {broadcast_ip}")
     
     try:
         # Create socket for broadcasting
@@ -309,14 +309,14 @@ def run_discovery():
         
         # Bind to specific interface to ensure broadcasts go to the right network
         broadcast_socket.bind((network_ip, 0))
-        logger.info(f"Bound to interface {network_ip}")
+        logger.debug(f"Bound to interface {network_ip}")
         
         try:
             # Send discovery request to broadcast
             discovery_request = "DISCOVER_CAMERAS"
             broadcast_addr = (broadcast_ip, 8888)  # ESP32s listen on 8888
             broadcast_socket.sendto(discovery_request.encode('utf-8'), broadcast_addr)
-            logger.info(f"Sent discovery request: {discovery_request} to {broadcast_addr}")
+            logger.debug(f"Sent discovery request: {discovery_request} to {broadcast_addr}")
             
         finally:
             broadcast_socket.close()
@@ -344,7 +344,7 @@ def start_scheduler():
     scheduler.start()
     logger.info("Flask-APScheduler started with discovery job (every 15 seconds)")
     next_run = scheduler.get_job('discovery_job').next_run_time
-    logger.info(f"Next discovery run scheduled for: {next_run}")
+    logger.debug(f"Next discovery run scheduled for: {next_run}")
     
     return scheduler
 
@@ -478,49 +478,99 @@ def get_stream_status(name):
         return jsonify({'error': f'Error getting status: {str(e)}'}), 500
 
 def stream_camera(name):
-    """Background thread function to continuously stream from a camera"""
+    """Background thread function to continuously stream from a camera using MJPEG"""
     stream = camera_streams[name]
     frame_times = []
     
+    # Use MJPEG stream instead of individual snapshots for better performance
+    stream_url = stream.get_stream_url()
+    
+    logger.info(f"Starting MJPEG stream from {stream_url}")
+    
     while stream.is_active:
         try:
-            # Get frame from ESP32 camera
-            response = requests.get(stream.get_snapshot_url(), timeout=5)
+            # Use streaming endpoint with browser-compatible headers
+            headers = {
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate',
+                'Cache-Control': 'no-cache',
+                'Origin': f'http://{stream.ip_address}',
+                'Pragma': 'no-cache',
+                'Referer': f'http://{stream.ip_address}/',
+            }
+            
+            response = requests.get(stream_url, stream=True, timeout=30, headers=headers)
             if response.status_code == 200:
-                # Convert to base64 for WebSocket transmission
-                frame_data = base64.b64encode(response.content).decode('utf-8')
+                logger.info(f"Successfully connected to MJPEG stream at {stream_url}")
                 
-                # Update stream statistics
-                current_time = datetime.now()
-                frame_times.append(current_time)
+                # Process MJPEG stream - simplified approach
+                buffer = b''
+                in_image = False
                 
-                # Keep only last 30 frame times for FPS calculation
-                if len(frame_times) > 30:
-                    frame_times.pop(0)
-                
-                if len(frame_times) > 1:
-                    time_diff = (frame_times[-1] - frame_times[0]).total_seconds()
-                    if time_diff > 0:
-                        stream.fps = len(frame_times) / time_diff
-                
-                stream.last_frame = frame_data
-                stream.last_frame_time = current_time
-                stream.frame_count += 1
-                
-                # Emit frame to connected clients
-                if stream.connected_clients:
-                    socketio.emit('frame', {
-                        'stream_name': name,
-                        'frame_data': frame_data,
-                        'timestamp': current_time.isoformat(),
-                        'frame_count': stream.frame_count
-                    }, to=name)
-                
-                # Limit frame rate to prevent overwhelming the network
-                time.sleep(0.1)  # ~10 FPS
+                for chunk in response.iter_content(chunk_size=1024):
+                    if not stream.is_active:
+                        break
+                    
+                    buffer += chunk
+                    
+                    # Look for JPEG start marker
+                    if b'\xff\xd8' in buffer and not in_image:
+                        # Start of JPEG image
+                        jpeg_start = buffer.find(b'\xff\xd8')
+                        buffer = buffer[jpeg_start:]
+                        in_image = True
+                        continue
+                    
+                    # Look for JPEG end marker
+                    if in_image and b'\xff\xd9' in buffer:
+                        # End of JPEG image
+                        jpeg_end = buffer.find(b'\xff\xd9') + 2
+                        image_data = buffer[:jpeg_end]
+                        buffer = buffer[jpeg_end:]
+                        in_image = False
+                        
+                        if len(image_data) > 100:  # Ensure we have a valid image
+                            # Convert to base64 for WebSocket transmission
+                            frame_data = base64.b64encode(image_data).decode('utf-8')
+                            
+                            # Update stream statistics
+                            current_time = datetime.now()
+                            frame_times.append(current_time)
+                            
+                            # Keep only last 30 frame times for FPS calculation
+                            if len(frame_times) > 30:
+                                frame_times.pop(0)
+                            
+                            if len(frame_times) > 1:
+                                time_diff = (frame_times[-1] - frame_times[0]).total_seconds()
+                                if time_diff > 0:
+                                    stream.fps = len(frame_times) / time_diff
+                            
+                            stream.last_frame = frame_data
+                            stream.last_frame_time = current_time
+                            stream.frame_count += 1
+                            
+                            # Emit frame to connected clients
+                            if stream.connected_clients:
+                                socketio.emit('frame', {
+                                    'stream_name': name,
+                                    'frame_data': frame_data,
+                                    'timestamp': current_time.isoformat(),
+                                    'frame_count': stream.frame_count
+                                }, to=name)
+                            
+                            # No artificial delay - let it run as fast as possible
+                            
             else:
-                time.sleep(1)
+                logger.error(f"Failed to connect to stream: HTTP {response.status_code}")
+                time.sleep(2)
                 
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error to {stream.ip_address}: {str(e)}")
+            time.sleep(2)
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout error to {stream.ip_address}: {str(e)}")
+            time.sleep(2)
         except Exception as e:
             logger.error(f"Error streaming from {name}: {str(e)}")
             time.sleep(2)
@@ -529,6 +579,7 @@ def stream_camera(name):
     stream.is_active = False
     stream.last_frame = None
     stream.fps = 0
+    logger.info(f"Stream stopped for {name}")
 
 @socketio.on('connect')
 def handle_connect():
@@ -588,7 +639,7 @@ def udp_listener_thread_func():
             try:
                 data, addr = udp_listener_socket.recvfrom(1024)
                 message = data.decode('utf-8').strip()
-                logger.info(f"UDP listener received from {addr}: {message}")
+                logger.debug(f"UDP listener received from {addr}: {message}")
                 
                 if message.startswith('ESP32_CAMERA:'):
                     parts = message.split(':')

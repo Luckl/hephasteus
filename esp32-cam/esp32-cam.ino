@@ -107,25 +107,25 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.frame_size = FRAMESIZE_UXGA;
+  config.frame_size = FRAMESIZE_VGA;  // Optimized for 800x600 performance
   config.pixel_format = PIXFORMAT_JPEG;  // for streaming
   //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  config.grab_mode = CAMERA_GRAB_LATEST;  // Always get the latest frame
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
-  config.fb_count = 1;
+  config.jpeg_quality = 15;  // Slightly lower quality for better performance
+  config.fb_count = 2;  // More frame buffers for better performance
 
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
+  // if PSRAM IC present, init with optimized settings for streaming
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      config.jpeg_quality = 10;
-      config.fb_count = 2;
-      config.grab_mode = CAMERA_GRAB_LATEST;
+      config.jpeg_quality = 15;  // Balanced quality/performance
+      config.fb_count = 2;  // More buffers for smoother streaming
+      config.grab_mode = CAMERA_GRAB_LATEST;  // Always get latest frame
     } else {
       // Limit the frame size when PSRAM is not available
-      config.frame_size = FRAMESIZE_SVGA;
+      config.frame_size = FRAMESIZE_QVGA;
       config.fb_location = CAMERA_FB_IN_DRAM;
+      config.jpeg_quality = 20;  // Lower quality for DRAM
     }
   } else {
     // Best option for face detection/recognition
@@ -154,9 +154,30 @@ void setup() {
     s->set_brightness(s, 1);   // up the brightness just a bit
     s->set_saturation(s, -2);  // lower the saturation
   }
-  // drop down frame size for higher initial frame rate
+  // Optimize for streaming performance
   if (config.pixel_format == PIXFORMAT_JPEG) {
-    s->set_framesize(s, FRAMESIZE_QVGA);
+    s->set_framesize(s, FRAMESIZE_VGA);  // 800x600 for good performance
+    s->set_quality(s, 15);  // Balanced quality/performance
+    s->set_brightness(s, 0);  // Default brightness
+    s->set_contrast(s, 0);   // Default contrast
+    s->set_saturation(s, 0); // Default saturation
+    s->set_special_effect(s, 0); // No special effects
+    s->set_whitebal(s, 1);   // Enable white balance
+    s->set_awb_gain(s, 1);   // Enable AWB gain
+    s->set_wb_mode(s, 0);    // Auto white balance
+    s->set_exposure_ctrl(s, 1); // Enable exposure control
+    s->set_aec2(s, 0);       // Disable AEC2 for better performance
+    s->set_gain_ctrl(s, 1);  // Enable gain control
+    s->set_agc_gain(s, 0);   // Default AGC gain
+    s->set_gainceiling(s, (gainceiling_t)0); // Default gain ceiling
+    s->set_bpc(s, 0);        // Disable BPC for performance
+    s->set_wpc(s, 1);        // Enable WPC
+    s->set_raw_gma(s, 1);    // Enable raw gamma
+    s->set_lenc(s, 1);       // Enable lens correction
+    s->set_hmirror(s, 0);    // No horizontal mirror
+    s->set_vflip(s, 0);      // No vertical flip
+    s->set_dcw(s, 1);        // Enable DCW
+    s->set_colorbar(s, 0);   // Disable colorbar
   }
 
 #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
