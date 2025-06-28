@@ -6,6 +6,9 @@ import time
 from datetime import datetime
 from flask_socketio import SocketIO
 
+# Import computer vision module
+from computer_vision import process_frame_with_cv
+
 logger = logging.getLogger(__name__)
 
 class CameraStream:
@@ -21,6 +24,11 @@ class CameraStream:
         self.fps = 0
         self.connected_clients = set()
         
+        # Computer vision settings
+        self.cv_enabled = True
+        self.cv_detections = []
+        self.last_detection_time = None
+        
     def get_stream_url(self):
         return f"http://{self.ip_address}:{self.port + 1}/stream"
     
@@ -29,6 +37,15 @@ class CameraStream:
     
     def get_status_url(self):
         return f"{self.base_url}/status"
+    
+    def toggle_cv(self, enabled=None):
+        """Toggle computer vision processing"""
+        if enabled is not None:
+            self.cv_enabled = enabled
+        else:
+            self.cv_enabled = not self.cv_enabled
+        logger.info(f"Computer vision {'enabled' if self.cv_enabled else 'disabled'} for {self.name}")
+        return self.cv_enabled
 
 def stream_camera(name, camera_streams, stream_threads, socketio):
     """Background thread function to continuously stream from a camera using MJPEG"""
@@ -83,8 +100,19 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                         in_image = False
                         
                         if len(image_data) > 100:  # Ensure we have a valid image
-                            # Convert to base64 for WebSocket transmission
+                            # Convert to base64 for processing
                             frame_data = base64.b64encode(image_data).decode('utf-8')
+                            
+                            # Apply computer vision processing if enabled
+                            if stream.cv_enabled:
+                                try:
+                                    processed_frame, detections = process_frame_with_cv(frame_data)
+                                    stream.cv_detections = detections
+                                    stream.last_detection_time = datetime.now()
+                                    frame_data = processed_frame
+                                except Exception as e:
+                                    logger.error(f"Computer vision processing error for {name}: {e}")
+                                    # Continue with original frame if CV fails
                             
                             # Update stream statistics
                             current_time = datetime.now()
@@ -109,7 +137,8 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                                     'stream_name': name,
                                     'frame_data': frame_data,
                                     'timestamp': current_time.isoformat(),
-                                    'frame_count': stream.frame_count
+                                    'frame_count': stream.frame_count,
+                                    'detections': stream.cv_detections if stream.cv_enabled else []
                                 }, to=name)
                             
                             # No artificial delay - let it run as fast as possible

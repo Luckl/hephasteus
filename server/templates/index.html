@@ -120,6 +120,16 @@
             box-shadow: 0 5px 15px rgba(255, 152, 0, 0.4);
         }
 
+        .btn-info {
+            background: linear-gradient(45deg, #2196F3, #1976D2);
+            color: white;
+        }
+
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(33, 150, 243, 0.4);
+        }
+
         .streams-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
@@ -216,6 +226,67 @@
             font-size: 1.1rem;
         }
 
+        .cv-controls {
+            background: rgba(33, 150, 243, 0.1);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(33, 150, 243, 0.3);
+        }
+
+        .cv-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .cv-toggle label {
+            color: white;
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+
+        .cv-toggle input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            accent-color: #2196F3;
+        }
+
+        .detections-panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 15px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+
+        .detections-title {
+            color: white;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .detection-item {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            padding: 5px 8px;
+            margin-bottom: 5px;
+            font-size: 0.8rem;
+            color: white;
+        }
+
+        .detection-type {
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .detection-confidence {
+            opacity: 0.8;
+        }
+
         .stream-controls {
             display: flex;
             gap: 10px;
@@ -288,7 +359,7 @@
     <div class="container">
         <div class="header">
             <h1>ESP32 Multi-Stream Camera Dashboard</h1>
-            <p>Monitor and control multiple ESP32 camera streams in real-time</p>
+            <p>Monitor and control multiple ESP32 camera streams with Computer Vision</p>
         </div>
 
         <div class="controls">
@@ -332,6 +403,10 @@
                 <div class="stat-item">
                     <div class="stat-value" id="totalFrames">0</div>
                     <div class="stat-label">Total Frames</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="totalDetections">0</div>
+                    <div class="stat-label">Total Detections</div>
                 </div>
             </div>
         </div>
@@ -388,6 +463,16 @@
             card.className = 'stream-card';
             card.id = `stream-${stream.name.replace(/\s+/g, '-')}`;
             
+            // Create detections display
+            const detectionsHtml = stream.cv_detections && stream.cv_detections.length > 0 
+                ? stream.cv_detections.map(detection => 
+                    `<div class="detection-item">
+                        <span class="detection-type">${detection.type}:</span>
+                        <span class="detection-confidence">${(detection.confidence * 100).toFixed(1)}%</span>
+                    </div>`
+                ).join('')
+                : '<div class="detection-item">No detections</div>';
+            
             card.innerHTML = `
                 <div class="stream-header">
                     <h3 class="stream-title">${stream.name}</h3>
@@ -417,6 +502,21 @@
                          alt="Camera Stream">
                 </div>
                 
+                <div class="cv-controls">
+                    <div class="cv-toggle">
+                        <input type="checkbox" id="cv-toggle-${stream.name.replace(/\s+/g, '-')}" 
+                               ${stream.cv_enabled ? 'checked' : ''} 
+                               onchange="toggleCV('${stream.name}', this.checked)">
+                        <label for="cv-toggle-${stream.name.replace(/\s+/g, '-')}">Computer Vision</label>
+                    </div>
+                    <div class="detections-panel">
+                        <div class="detections-title">Detections:</div>
+                        <div id="detections-${stream.name.replace(/\s+/g, '-')}">
+                            ${detectionsHtml}
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="stream-controls">
                     <button class="btn btn-primary btn-small" onclick="startStream('${stream.name}')" 
                             ${stream.is_active ? 'disabled' : ''}>
@@ -428,6 +528,9 @@
                     </button>
                     <button class="btn btn-primary btn-small" onclick="takeSnapshot('${stream.name}')">
                         Snapshot
+                    </button>
+                    <button class="btn btn-info btn-small" onclick="getDetections('${stream.name}')">
+                        Detections
                     </button>
                     <button class="btn btn-danger btn-small" onclick="removeStream('${stream.name}')">
                         Remove
@@ -448,6 +551,8 @@
                 const fpsElement = card.querySelector('.stream-info .info-item:nth-child(2)');
                 const framesElement = card.querySelector('.stream-info .info-item:nth-child(3)');
                 const clientsElement = card.querySelector('.stream-info .info-item:nth-child(4)');
+                const cvToggle = card.querySelector('input[type="checkbox"]');
+                const detectionsContainer = card.querySelector('.detections-panel > div:last-child');
                 
                 statusElement.className = `stream-status ${stream.is_active ? 'status-active' : 'status-inactive'}`;
                 statusElement.textContent = stream.is_active ? 'Active' : 'Inactive';
@@ -455,6 +560,25 @@
                 fpsElement.innerHTML = `<span class="info-label">FPS:</span> ${stream.fps.toFixed(1)}`;
                 framesElement.innerHTML = `<span class="info-label">Frames:</span> ${stream.frame_count}`;
                 clientsElement.innerHTML = `<span class="info-label">Clients:</span> ${stream.connected_clients}`;
+                
+                // Update CV toggle
+                if (cvToggle) {
+                    cvToggle.checked = stream.cv_enabled;
+                }
+                
+                // Update detections
+                if (detectionsContainer && stream.cv_detections) {
+                    if (stream.cv_detections.length > 0) {
+                        detectionsContainer.innerHTML = stream.cv_detections.map(detection => 
+                            `<div class="detection-item">
+                                <span class="detection-type">${detection.type}:</span>
+                                <span class="detection-confidence">${(detection.confidence * 100).toFixed(1)}%</span>
+                            </div>`
+                        ).join('');
+                    } else {
+                        detectionsContainer.innerHTML = '<div class="detection-item">No detections</div>';
+                    }
+                }
                 
                 // Update button states
                 const startBtn = card.querySelector('button[onclick*="startStream"]');
@@ -471,11 +595,62 @@
             const activeStreams = Object.values(streams).filter(s => s.is_active).length;
             const totalClients = Object.values(streams).reduce((sum, s) => sum + s.connected_clients, 0);
             const totalFrames = Object.values(streams).reduce((sum, s) => sum + s.frame_count, 0);
+            const totalDetections = Object.values(streams).reduce((sum, s) => sum + (s.cv_detections ? s.cv_detections.length : 0), 0);
             
             document.getElementById('totalStreams').textContent = totalStreams;
             document.getElementById('activeStreams').textContent = activeStreams;
             document.getElementById('totalClients').textContent = totalClients;
             document.getElementById('totalFrames').textContent = totalFrames;
+            document.getElementById('totalDetections').textContent = totalDetections;
+        }
+
+        // Toggle computer vision
+        async function toggleCV(streamName, enabled) {
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}/cv/toggle`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ enabled: enabled })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(result.message);
+                    await loadStreams();
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error toggling CV:', error);
+                alert('Error toggling computer vision');
+            }
+        }
+
+        // Get detections for a stream
+        async function getDetections(streamName) {
+            try {
+                const response = await fetch(`/api/streams/${encodeURIComponent(streamName)}/cv/detections`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Detections:', data);
+                    
+                    // Update the detections display
+                    if (streams[streamName]) {
+                        streams[streamName].cv_detections = data.detections;
+                        updateStreamCard(streams[streamName]);
+                    }
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error getting detections:', error);
+                alert('Error getting detections');
+            }
         }
 
         // Add new stream
@@ -617,6 +792,7 @@
             if (streams[streamName]) {
                 streams[streamName].frame_count = data.frame_count;
                 streams[streamName].last_frame_time = data.timestamp;
+                streams[streamName].cv_detections = data.detections || [];
                 updateStreamCard(streams[streamName]);
                 updateStats();
             }

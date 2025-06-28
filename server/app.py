@@ -83,7 +83,10 @@ def get_streams():
             'fps': stream.fps,
             'frame_count': stream.frame_count,
             'connected_clients': len(stream.connected_clients),
-            'last_frame_time': stream.last_frame_time.isoformat() if stream.last_frame_time else None
+            'last_frame_time': stream.last_frame_time.isoformat() if stream.last_frame_time else None,
+            'cv_enabled': stream.cv_enabled,
+            'cv_detections': stream.cv_detections,
+            'last_detection_time': stream.last_detection_time.isoformat() if stream.last_detection_time else None
         })
     return jsonify(streams_data)
 
@@ -198,6 +201,58 @@ def get_stream_status(name):
     except Exception as e:
         return jsonify({'error': f'Error getting status: {str(e)}'}), 500
 
+# Computer Vision API endpoints
+@app.route('/api/streams/<name>/cv/toggle', methods=['POST'])
+def toggle_computer_vision(name):
+    """Toggle computer vision processing for a stream"""
+    if name not in camera_streams:
+        return jsonify({'error': 'Stream not found'}), 404
+    
+    stream = camera_streams[name]
+    data = request.get_json() or {}
+    enabled = data.get('enabled')  # None means toggle
+    
+    cv_enabled = stream.toggle_cv(enabled)
+    
+    return jsonify({
+        'message': f'Computer vision {"enabled" if cv_enabled else "disabled"}',
+        'cv_enabled': cv_enabled
+    })
+
+@app.route('/api/streams/<name>/cv/detections', methods=['GET'])
+def get_detections(name):
+    """Get current detections for a stream"""
+    if name not in camera_streams:
+        return jsonify({'error': 'Stream not found'}), 404
+    
+    stream = camera_streams[name]
+    
+    return jsonify({
+        'cv_enabled': stream.cv_enabled,
+        'detections': stream.cv_detections,
+        'last_detection_time': stream.last_detection_time.isoformat() if stream.last_detection_time else None,
+        'detection_count': len(stream.cv_detections)
+    })
+
+@app.route('/api/streams/<name>/cv/settings', methods=['GET'])
+def get_cv_settings(name):
+    """Get computer vision settings for a stream"""
+    if name not in camera_streams:
+        return jsonify({'error': 'Stream not found'}), 404
+    
+    stream = camera_streams[name]
+    
+    return jsonify({
+        'cv_enabled': stream.cv_enabled,
+        'available_detections': ['face', 'person', 'animal', 'motion'],
+        'detection_types': {
+            'face': 'Face detection using Haar cascade',
+            'person': 'Person detection using HOG',
+            'animal': 'Basic animal detection using color/shape',
+            'motion': 'Motion detection using background subtraction'
+        }
+    })
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
@@ -227,7 +282,8 @@ def handle_join_stream(data):
                 'stream_name': stream_name,
                 'frame_data': stream.last_frame,
                 'timestamp': stream.last_frame_time.isoformat() if stream.last_frame_time else None,
-                'frame_count': stream.frame_count
+                'frame_count': stream.frame_count,
+                'detections': stream.cv_detections if stream.cv_enabled else []
             })
 
 @socketio.on('leave_stream')
@@ -246,7 +302,7 @@ if __name__ == '__main__':
     # Start the Flask-APScheduler with discovery job
     scheduler_instance = start_scheduler()
     
-    logger.info("ESP32 Multi-Stream Camera Server")
+    logger.info("ESP32 Multi-Stream Camera Server with Computer Vision")
     logger.info("Available endpoints:")
     logger.info("  GET  /                    - Main dashboard")
     logger.info("  GET  /api/streams         - List all streams")
@@ -256,6 +312,10 @@ if __name__ == '__main__':
     logger.info("  POST /api/streams/<name>/stop  - Stop streaming")
     logger.info("  GET  /api/streams/<name>/snapshot - Get snapshot")
     logger.info("  GET  /api/streams/<name>/status  - Get camera status")
+    logger.info("Computer Vision endpoints:")
+    logger.info("  POST /api/streams/<name>/cv/toggle - Toggle CV processing")
+    logger.info("  GET  /api/streams/<name>/cv/detections - Get current detections")
+    logger.info("  GET  /api/streams/<name>/cv/settings - Get CV settings")
     logger.info("Example ESP32 endpoints:")
     logger.info("  http://<esp32-ip>/capture  - Get JPEG snapshot")
     logger.info("  http://<esp32-ip>/stream   - Get MJPEG stream")
