@@ -6,8 +6,9 @@ import time
 from datetime import datetime
 from flask_socketio import SocketIO
 
-# Import computer vision module
+# Import our modules
 from computer_vision import process_frame_with_cv
+from video_recorder import process_frame_for_recording
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,9 @@ class CameraStream:
         self.cv_detections = []
         self.last_detection_time = None
         
+        # Video recording settings
+        self.recording_enabled = True
+        
     def get_stream_url(self):
         return f"http://{self.ip_address}:{self.port + 1}/stream"
     
@@ -46,6 +50,15 @@ class CameraStream:
             self.cv_enabled = not self.cv_enabled
         logger.info(f"Computer vision {'enabled' if self.cv_enabled else 'disabled'} for {self.name}")
         return self.cv_enabled
+    
+    def toggle_recording(self, enabled=None):
+        """Toggle video recording"""
+        if enabled is not None:
+            self.recording_enabled = enabled
+        else:
+            self.recording_enabled = not self.recording_enabled
+        logger.info(f"Video recording {'enabled' if self.recording_enabled else 'disabled'} for {self.name}")
+        return self.recording_enabled
 
 def stream_camera(name, camera_streams, stream_threads, socketio):
     """Background thread function to continuously stream from a camera using MJPEG"""
@@ -104,6 +117,7 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             frame_data = base64.b64encode(image_data).decode('utf-8')
                             
                             # Apply computer vision processing if enabled
+                            detections = []
                             if stream.cv_enabled:
                                 try:
                                     processed_frame, detections = process_frame_with_cv(frame_data)
@@ -113,6 +127,14 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                                 except Exception as e:
                                     logger.error(f"Computer vision processing error for {name}: {e}")
                                     # Continue with original frame if CV fails
+                            
+                            # Process video recording if enabled
+                            if stream.recording_enabled:
+                                try:
+                                    current_time = datetime.now()
+                                    process_frame_for_recording(name, frame_data, detections, current_time)
+                                except Exception as e:
+                                    logger.error(f"Video recording error for {name}: {e}")
                             
                             # Update stream statistics
                             current_time = datetime.now()
@@ -129,6 +151,7 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             
                             stream.last_frame = frame_data
                             stream.last_frame_time = current_time
+                            
                             stream.frame_count += 1
                             
                             # Emit frame to connected clients

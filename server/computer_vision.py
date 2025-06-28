@@ -139,52 +139,6 @@ class ComputerVisionProcessor:
             logger.error(f"Error detecting motion: {e}")
             return []
     
-    def detect_animals(self, image):
-        """Detect animals using a pre-trained model"""
-        # For now, we'll use a simple approach with color and shape detection
-        # In a production system, you'd want to use a proper animal detection model
-        # like YOLO, SSD, or a custom trained model
-        
-        try:
-            # Convert to HSV for better color detection
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            
-            # Simple animal detection based on color ranges and contours
-            # This is a basic implementation - for better results, use a proper model
-            
-            # Detect brown/beige colors (common for many animals)
-            lower_brown = np.array([10, 50, 50])
-            upper_brown = np.array([20, 255, 255])
-            brown_mask = cv2.inRange(hsv, lower_brown, upper_brown)
-            
-            # Find contours
-            contours, _ = cv2.findContours(brown_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            animal_detections = []
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area > 1000:  # Filter small noise
-                    x, y, w, h = cv2.boundingRect(contour)
-                    # Simple aspect ratio check for animal-like shapes
-                    aspect_ratio = w / h if h > 0 else 0
-                    if 0.5 < aspect_ratio < 2.0:  # Reasonable animal proportions
-                        confidence = min(area / 5000, 0.7)  # Lower confidence for basic detection
-                        
-                        # Only include if confidence meets threshold
-                        if confidence >= self.confidence_threshold:
-                            animal_detections.append({
-                                'type': 'animal',
-                                'bbox': [int(x), int(y), int(w), int(h)],
-                                'confidence': confidence,
-                                'area': area
-                            })
-            
-            return animal_detections
-            
-        except Exception as e:
-            logger.error(f"Error detecting animals: {e}")
-            return []
-    
     def filter_detections_by_confidence(self, detections):
         """Filter detections to only include those above confidence threshold"""
         return [detection for detection in detections if detection.get('confidence', 0) >= self.confidence_threshold]
@@ -259,10 +213,6 @@ class ComputerVisionProcessor:
             # Person detection
             persons = self.detect_persons(image)
             all_detections.extend(persons)
-            
-            # Animal detection
-            animals = self.detect_animals(image)
-            all_detections.extend(animals)
             
             # Motion detection
             motion = self.detect_motion(image)

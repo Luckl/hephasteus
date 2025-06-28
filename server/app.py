@@ -5,7 +5,7 @@ import threading
 import requests
 import logging
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_apscheduler import APScheduler
 
@@ -13,6 +13,7 @@ from flask_apscheduler import APScheduler
 from camera_stream import CameraStream, stream_camera
 from network_discovery import run_discovery
 from udp_listener import start_udp_listener, stop_udp_listener
+from video_recorder import get_video_recorder
 
 # Configure logging
 logging.basicConfig(
@@ -75,6 +76,10 @@ def get_streams():
     """Get all camera streams"""
     streams_data = []
     for name, stream in camera_streams.items():
+        # Get recording status
+        recorder = get_video_recorder()
+        recording_status = recorder.get_recording_status(name)
+        
         streams_data.append({
             'name': stream.name,
             'ip_address': stream.ip_address,
@@ -86,7 +91,9 @@ def get_streams():
             'last_frame_time': stream.last_frame_time.isoformat() if stream.last_frame_time else None,
             'cv_enabled': stream.cv_enabled,
             'cv_detections': stream.cv_detections,
-            'last_detection_time': stream.last_detection_time.isoformat() if stream.last_detection_time else None
+            'last_detection_time': stream.last_detection_time.isoformat() if stream.last_detection_time else None,
+            'recording_enabled': stream.recording_enabled,
+            'recording_status': recording_status
         })
     return jsonify(streams_data)
 
@@ -244,14 +251,64 @@ def get_cv_settings(name):
     
     return jsonify({
         'cv_enabled': stream.cv_enabled,
-        'available_detections': ['face', 'person', 'animal', 'motion'],
+        'available_detections': ['face', 'person', 'motion'],
         'detection_types': {
             'face': 'Face detection using Haar cascade',
             'person': 'Person detection using HOG',
-            'animal': 'Basic animal detection using color/shape',
             'motion': 'Motion detection using background subtraction'
         }
     })
+
+# Video Recording API endpoints
+@app.route('/api/streams/<name>/recording/toggle', methods=['POST'])
+def toggle_recording(name):
+    """Toggle video recording for a stream"""
+    if name not in camera_streams:
+        return jsonify({'error': 'Stream not found'}), 404
+    
+    stream = camera_streams[name]
+    data = request.get_json() or {}
+    enabled = data.get('enabled')  # None means toggle
+    
+    recording_enabled = stream.toggle_recording(enabled)
+    
+    return jsonify({
+        'message': f'Video recording {"enabled" if recording_enabled else "disabled"}',
+        'recording_enabled': recording_enabled
+    })
+
+@app.route('/api/streams/<name>/recording/status', methods=['GET'])
+def get_recording_status(name):
+    """Get recording status for a stream"""
+    if name not in camera_streams:
+        return jsonify({'error': 'Stream not found'}), 404
+    
+    recorder = get_video_recorder()
+    status = recorder.get_recording_status(name)
+    
+    return jsonify(status)
+
+@app.route('/api/recordings', methods=['GET'])
+def get_all_recordings():
+    """Get all recorded videos"""
+    recorder = get_video_recorder()
+    recordings = recorder.get_all_recordings()
+    
+    return jsonify({
+        'recordings': recordings,
+        'total_count': len(recordings)
+    })
+
+@app.route('/api/recordings/<filename>', methods=['GET'])
+def download_recording(filename):
+    """Download a recorded video file"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Recording not found'}), 404
+    
+    return send_file(filepath, as_attachment=True)
 
 @socketio.on('connect')
 def handle_connect():
@@ -302,7 +359,7 @@ if __name__ == '__main__':
     # Start the Flask-APScheduler with discovery job
     scheduler_instance = start_scheduler()
     
-    logger.info("ESP32 Multi-Stream Camera Server with Computer Vision")
+    logger.info("ESP32 Multi-Stream Camera Server with Computer Vision & Recording")
     logger.info("Available endpoints:")
     logger.info("  GET  /                    - Main dashboard")
     logger.info("  GET  /api/streams         - List all streams")
@@ -316,6 +373,11 @@ if __name__ == '__main__':
     logger.info("  POST /api/streams/<name>/cv/toggle - Toggle CV processing")
     logger.info("  GET  /api/streams/<name>/cv/detections - Get current detections")
     logger.info("  GET  /api/streams/<name>/cv/settings - Get CV settings")
+    logger.info("Video Recording endpoints:")
+    logger.info("  POST /api/streams/<name>/recording/toggle - Toggle recording")
+    logger.info("  GET  /api/streams/<name>/recording/status - Get recording status")
+    logger.info("  GET  /api/recordings - List all recordings")
+    logger.info("  GET  /api/recordings/<filename> - Download recording")
     logger.info("Example ESP32 endpoints:")
     logger.info("  http://<esp32-ip>/capture  - Get JPEG snapshot")
     logger.info("  http://<esp32-ip>/stream   - Get MJPEG stream")
