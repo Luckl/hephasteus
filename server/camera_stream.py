@@ -33,6 +33,10 @@ class CameraStream:
         # Video recording settings
         self.recording_enabled = True
         
+        # Background detection settings
+        self.background_detection_active = False
+        self.background_thread = None
+        
     def get_stream_url(self):
         return f"http://{self.ip_address}:{self.port + 1}/stream"
     
@@ -59,11 +63,71 @@ class CameraStream:
             self.recording_enabled = not self.recording_enabled
         logger.info(f"Video recording {'enabled' if self.recording_enabled else 'disabled'} for {self.name}")
         return self.recording_enabled
+    
+    def start_background_detection(self):
+        """Start background detection thread"""
+        if self.background_detection_active:
+            return
+        
+        self.background_detection_active = True
+        self.background_thread = threading.Thread(
+            target=self._background_detection_loop,
+            daemon=True
+        )
+        self.background_thread.start()
+        logger.info(f"Started background detection for {self.name}")
+    
+    def stop_background_detection(self):
+        """Stop background detection thread"""
+        self.background_detection_active = False
+        if self.background_thread:
+            self.background_thread.join(timeout=2)
+        logger.info(f"Stopped background detection for {self.name}")
+    
+    def _background_detection_loop(self):
+        """Background thread for continuous detection (monitoring only)"""
+        detection_interval = 0.2  # Check every 200ms (increased frequency)
+        
+        while self.background_detection_active and self.is_active:
+            try:
+                # Get a snapshot for detection
+                response = requests.get(self.get_snapshot_url(), timeout=5)
+                if response.status_code == 200:
+                    # Convert to base64
+                    frame_data = base64.b64encode(response.content).decode('utf-8')
+                    
+                    # Process with computer vision (for monitoring only)
+                    if self.cv_enabled:
+                        try:
+                            processed_frame, detections = process_frame_with_cv(frame_data)
+                            self.cv_detections = detections
+                            self.last_detection_time = datetime.now()
+                            
+                            # Log significant detections
+                            if detections:
+                                detection_types = [d['type'] for d in detections]
+                                logger.info(f"Background detection for {self.name}: {detection_types}")
+                                
+                        except Exception as e:
+                            logger.error(f"Background detection error for {self.name}: {e}")
+                
+                # Wait before next detection
+                time.sleep(detection_interval)
+                
+            except requests.exceptions.RequestException as e:
+                logger.debug(f"Background detection request error for {self.name}: {e}")
+                time.sleep(detection_interval)
+            except Exception as e:
+                logger.error(f"Background detection loop error for {self.name}: {e}")
+                time.sleep(detection_interval)
 
 def stream_camera(name, camera_streams, stream_threads, socketio):
     """Background thread function to continuously stream from a camera using MJPEG"""
     stream = camera_streams[name]
     frame_times = []
+    
+    # Start background detection
+    stream.start_background_detection()
     
     # Use MJPEG stream instead of individual snapshots for better performance
     stream_url = stream.get_stream_url()
@@ -116,23 +180,29 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             # Convert to base64 for processing
                             frame_data = base64.b64encode(image_data).decode('utf-8')
                             
-                            # Apply computer vision processing if enabled
+                            # Apply computer vision processing if enabled (for display)
                             detections = []
                             if stream.cv_enabled:
                                 try:
                                     processed_frame, detections = process_frame_with_cv(frame_data)
-                                    stream.cv_detections = detections
-                                    stream.last_detection_time = datetime.now()
+                                    # Use detections from background thread if available and more recent
+                                    if stream.cv_detections and stream.last_detection_time:
+                                        # Use background detections if they're recent (within last 5 seconds)
+                                        time_diff = (datetime.now() - stream.last_detection_time).total_seconds()
+                                        if time_diff < 5.0:
+                                            detections = stream.cv_detections
                                     frame_data = processed_frame
                                 except Exception as e:
                                     logger.error(f"Computer vision processing error for {name}: {e}")
                                     # Continue with original frame if CV fails
                             
-                            # Process video recording if enabled
+                            # Process video recording if enabled (using full frame rate)
                             if stream.recording_enabled:
                                 try:
                                     current_time = datetime.now()
-                                    process_frame_for_recording(name, frame_data, detections, current_time)
+                                    # Use detections from background thread for recording decisions
+                                    recording_detections = stream.cv_detections if stream.cv_detections else detections
+                                    process_frame_for_recording(name, frame_data, recording_detections, current_time)
                                 except Exception as e:
                                     logger.error(f"Video recording error for {name}: {e}")
                             
@@ -151,7 +221,6 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             
                             stream.last_frame = frame_data
                             stream.last_frame_time = current_time
-                            
                             stream.frame_count += 1
                             
                             # Emit frame to connected clients
@@ -181,6 +250,7 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
             time.sleep(2)
     
     # Clean up when stream stops
+    stream.stop_background_detection()
     stream.is_active = False
     stream.last_frame = None
     stream.fps = 0

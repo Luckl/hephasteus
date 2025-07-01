@@ -2,250 +2,179 @@ import cv2
 import numpy as np
 import base64
 import logging
-from datetime import datetime
-import threading
-import time
+import os
+from ultralytics import YOLO
+import torch
+import ultralytics
 
 logger = logging.getLogger(__name__)
 
-class ComputerVisionProcessor:
-    def __init__(self):
-        self.face_cascade = None
-        self.person_cascade = None
-        self.motion_detector = None
-        self.previous_frame = None
-        self.motion_threshold = 25
-        self.min_motion_area = 500
-        self.confidence_threshold = 0.8  # 80% confidence threshold
-        
-        # Initialize OpenCV models
-        self._load_models()
-        
-    def _load_models(self):
-        """Load OpenCV cascade classifiers and models"""
+# Initialize YOLOv8 model for person detection
+yolo_model = None
+
+def get_yolo_model():
+    global yolo_model
+    if yolo_model is None:
         try:
-            # Face detection - using Haar cascade (built into OpenCV)
-            self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            torch.serialization.add_safe_globals([ultralytics.nn.tasks.DetectionModel, torch.nn.modules.container.Sequential, ultralytics.nn.modules.Conv, torch.nn.modules.linear.Linear])
+
             
-            # Person detection - using HOG (Histogram of Oriented Gradients)
-            self.person_detector = cv2.HOGDescriptor()
-            self.person_detector.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-            
-            # Motion detection - using background subtraction
-            self.motion_detector = cv2.createBackgroundSubtractorMOG2(
-                history=100, 
-                varThreshold=40, 
-                detectShadows=False
-            )
-            
-            logger.info("Computer vision models loaded successfully")
-            
+            logger.info("Loading YOLOv11 model...")
+            # Use YOLOv8n (nano) model for person detection - lightweight and fast
+            yolo_model = YOLO('yolo11n.pt')
+            logger.info("YOLOv11 model loaded successfully")
         except Exception as e:
-            logger.error(f"Error loading computer vision models: {e}")
-    
-    def detect_faces(self, image):
-        """Detect faces in the image"""
-        if self.face_cascade is None:
+            logger.error(f"Failed to load YOLOv8 model: {e}")
+            yolo_model = None
+    return yolo_model
+
+def detect_persons(frame):
+    """Detect persons using YOLOv11"""
+    try:
+        model = get_yolo_model()
+        if model is None:
+            logger.warning("YOLOv8 model not available, skipping person detection")
             return []
         
-        try:
-            # Convert to grayscale for face detection
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            
-            # Detect faces
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(30, 30)
-            )
-            
-            # Convert to list of dictionaries
-            face_detections = []
-            for (x, y, w, h) in faces:
-                face_detections.append({
-                    'type': 'face',
-                    'bbox': [int(x), int(y), int(w), int(h)],
-                    'confidence': 0.8  # Haar cascade doesn't provide confidence
-                })
-            
-            return face_detections
-            
-        except Exception as e:
-            logger.error(f"Error detecting faces: {e}")
-            return []
-    
-    def detect_persons(self, image):
-        """Detect persons in the image"""
-        if self.person_detector is None:
-            return []
+        # Run YOLOv8 inference
+        results = model(frame, verbose=False)
         
-        try:
-            # Detect persons
-            boxes, weights = self.person_detector.detectMultiScale(
-                image,
-                winStride=(8, 8),
-                padding=(4, 4),
-                scale=1.05
-            )
-            
-            # Convert to list of dictionaries
-            person_detections = []
-            for (x, y, w, h), weight in zip(boxes, weights):
-                person_detections.append({
-                    'type': 'person',
-                    'bbox': [int(x), int(y), int(w), int(h)],
-                    'confidence': float(weight)
-                })
-            
-            return person_detections
-            
-        except Exception as e:
-            logger.error(f"Error detecting persons: {e}")
-            return []
-    
-    def detect_motion(self, image):
-        """Detect motion in the image"""
-        if self.motion_detector is None:
-            return []
+        results_list = []
         
-        try:
-            # Apply background subtraction
-            fgmask = self.motion_detector.apply(image)
-            
-            # Find contours of moving objects
-            contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            motion_detections = []
-            for contour in contours:
-                # Filter by area to avoid noise
-                area = cv2.contourArea(contour)
-                if area > self.min_motion_area:
-                    x, y, w, h = cv2.boundingRect(contour)
-                    confidence = min(area / 1000, 1.0)  # Normalize confidence
+        for result in results:
+            boxes = result.boxes
+            if boxes is not None:
+                for box in boxes:
+                    # Get box coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     
-                    # Only include if confidence meets threshold
-                    if confidence >= self.confidence_threshold:
-                        motion_detections.append({
-                            'type': 'motion',
-                            'bbox': [int(x), int(y), int(w), int(h)],
-                            'confidence': confidence,
-                            'area': area
-                        })
-            
-            return motion_detections
-            
-        except Exception as e:
-            logger.error(f"Error detecting motion: {e}")
-            return []
-    
-    def filter_detections_by_confidence(self, detections):
-        """Filter detections to only include those above confidence threshold"""
-        return [detection for detection in detections if detection.get('confidence', 0) >= self.confidence_threshold]
-    
-    def draw_detections(self, image, detections):
-        """Draw bounding boxes and labels on the image"""
-        try:
-            # Filter detections by confidence threshold
-            filtered_detections = self.filter_detections_by_confidence(detections)
-            
-            # Color map for different detection types
-            colors = {
-                'face': (0, 255, 0),      # Green
-                'person': (255, 0, 0),    # Blue
-                'animal': (0, 0, 255),    # Red
-                'motion': (255, 255, 0)   # Cyan
-            }
-            
-            for detection in filtered_detections:
-                detection_type = detection['type']
-                bbox = detection['bbox']
-                confidence = detection.get('confidence', 0.0)
-                
-                x, y, w, h = bbox
-                color = colors.get(detection_type, (255, 255, 255))
-                
-                # Draw bounding box
-                cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
-                
-                # Draw label with confidence
-                label = f"{detection_type.capitalize()}: {confidence:.2f}"
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                
-                # Draw label background
-                cv2.rectangle(image, (x, y - label_size[1] - 10), 
-                            (x + label_size[0], y), color, -1)
-                
-                # Draw label text
-                cv2.putText(image, label, (x, y - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            
-            return image
-            
-        except Exception as e:
-            logger.error(f"Error drawing detections: {e}")
-            return image
-    
-    def process_frame(self, image_data):
-        """Process a frame and return detections with bounding boxes"""
-        try:
-            # Decode base64 image
-            if isinstance(image_data, str):
-                image_bytes = base64.b64decode(image_data)
-            else:
-                image_bytes = image_data
-            
-            # Convert to OpenCV format
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                logger.error("Failed to decode image")
-                return image_data, []
-            
-            # Run all detections
-            all_detections = []
-            
-            # Face detection
-            faces = self.detect_faces(image)
-            all_detections.extend(faces)
-            
-            # Person detection
-            persons = self.detect_persons(image)
-            all_detections.extend(persons)
-            
-            # Motion detection
-            motion = self.detect_motion(image)
-            all_detections.extend(motion)
-            
-            # Filter detections by confidence threshold
-            filtered_detections = self.filter_detections_by_confidence(all_detections)
-            
-            # Draw detections on image (only high-confidence ones)
-            if filtered_detections:
-                image = self.draw_detections(image, all_detections)  # Pass all detections for drawing
-            
-            # Convert back to base64
-            _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            processed_image_data = base64.b64encode(buffer).decode('utf-8')
-            
-            return processed_image_data, filtered_detections
-            
-        except Exception as e:
-            logger.error(f"Error processing frame: {e}")
-            return image_data, []
+                    # Get confidence and class
+                    confidence = float(box.conf[0].cpu().numpy())
+                    class_id = int(box.cls[0].cpu().numpy())
+                    
+                    # YOLOv8 COCO classes - class 0 is 'person'
+                    if class_id == 0:  # Person class
+                        # Apply confidence threshold
+                        if confidence >= 0.5:  # Lower threshold for YOLOv8
+                            # Convert to integer coordinates
+                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                            
+                            # Calculate width and height
+                            width = x2 - x1
+                            height = y2 - y1
+                            
+                            # Validate bounding box
+                            if width > 0 and height > 0:
+                                results_list.append({
+                                    'type': 'person',
+                                    'bbox': [x1, y1, width, height],
+                                    'confidence': confidence
+                                })
+                                
+                                logger.debug(f"YOLOv8 person detected: confidence={confidence:.3f}, bbox=[{x1}, {y1}, {width}, {height}]")
+        
+        if results_list:
+            logger.info(f"YOLOv8 detections found: {len(results_list)}")
+        
+        return results_list
+        
+    except Exception as e:
+        logger.error(f"YOLOv8 detection error: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        return []
 
-# Global instance
-cv_processor = None
+def detect_motion(frame, prev_frame=None):
+    """Detect motion using frame differencing"""
+    if prev_frame is None:
+        return []
+    
+    # Convert frames to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    
+    # Calculate frame difference
+    frame_diff = cv2.absdiff(prev_gray, gray)
+    
+    # Apply threshold to get motion mask
+    _, motion_mask = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
+    
+    # Apply morphological operations to reduce noise
+    kernel = np.ones((5, 5), np.uint8)
+    motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, kernel)
+    motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
+    
+    # Find contours in motion areas
+    contours, _ = cv2.findContours(motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    detections = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 500:  # Minimum motion area
+            x, y, w, h = cv2.boundingRect(contour)
+            confidence = min(0.8, area / (frame.shape[0] * frame.shape[1]) * 20)
+            detections.append({
+                'type': 'motion',
+                'bbox': [int(x), int(y), int(w), int(h)],
+                'confidence': float(confidence)
+            })
+    
+    return detections
 
-def get_cv_processor():
-    """Get or create the computer vision processor instance"""
-    global cv_processor
-    if cv_processor is None:
-        cv_processor = ComputerVisionProcessor()
-    return cv_processor
+def draw_detections(frame, detections):
+    """Draw detection bounding boxes on frame"""
+    for detection in detections:
+        bbox = detection['bbox']
+        x, y, w, h = bbox
+        confidence = detection['confidence']
+        detection_type = detection['type']
+        
+        # Draw bounding box around the detected object
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        
+        # Get class label
+        label = f"{detection_type}: {confidence:.2f}"
+        
+        # Get width and text of the label string
+        (w_text, h_text), t = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        y = max(y, h_text)
+        
+        # Draw bounding box around the text
+        cv2.rectangle(frame, (x, y - h_text), (x + w_text, y + t), (0, 0, 0), cv2.FILLED)
+        cv2.putText(frame, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
+    return frame
 
-def process_frame_with_cv(image_data):
-    """Process a frame with computer vision and return processed image with detections"""
-    processor = get_cv_processor()
-    return processor.process_frame(image_data) 
+def process_frame_with_cv(frame_data):
+    """Process frame with computer vision"""
+    try:
+        # Decode base64 frame
+        frame_bytes = base64.b64decode(frame_data)
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            return frame_data, []
+        
+        # Run all detection methods
+        all_detections = []
+        
+        # Person detection using YOLOv8
+        person_detections = detect_persons(frame)
+        if person_detections:
+            logger.info(f"Person detections found: {len(person_detections)}")
+            for det in person_detections:
+                logger.info(f"Detection: {det}")
+        all_detections.extend(person_detections)
+        
+        # Draw detections on frame
+        frame_with_boxes = draw_detections(frame.copy(), all_detections)
+        
+        # Encode back to base64
+        _, buffer = cv2.imencode('.jpg', frame_with_boxes, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        processed_frame_data = base64.b64encode(buffer).decode('utf-8')
+        
+        return processed_frame_data, all_detections
+        
+    except Exception as e:
+        logger.error(f"Computer vision processing error: {e}")
+        return frame_data, [] 

@@ -12,10 +12,11 @@ import json
 logger = logging.getLogger(__name__)
 
 class VideoRecorder:
-    def __init__(self, output_dir="recordings", buffer_seconds=1, max_buffer_size=30):
+    def __init__(self, output_dir="recordings", buffer_seconds=1, max_buffer_size=30, min_recording_duration=1.0):
         self.output_dir = output_dir
         self.buffer_seconds = buffer_seconds
         self.max_buffer_size = max_buffer_size
+        self.min_recording_duration = min_recording_duration  # Minimum recording duration in seconds
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -26,7 +27,10 @@ class VideoRecorder:
         self.video_writers = {}
         self.lock = threading.Lock()
         
-        logger.info(f"Video recorder initialized: {output_dir}")
+        # Add cooldown tracking to prevent premature stops
+        self.last_detection_times = {}  # Track when we last saw a detection for each stream
+        
+        logger.info(f"Video recorder initialized: {output_dir}, min duration: {min_recording_duration}s")
     
     def add_frame_to_buffer(self, stream_name, frame_data, timestamp):
         """Add frame to buffer"""
@@ -54,12 +58,28 @@ class VideoRecorder:
         if stream_name not in self.recording_states:
             return False
         
-        if not detections:
-            return True
+        # Check if we have current detections
+        has_current_detections = False
+        if detections:
+            for detection in detections:
+                if detection['type'] in ['face', 'person'] and detection.get('confidence', 0) >= 0.8:
+                    has_current_detections = True
+                    # Update last detection time
+                    self.last_detection_times[stream_name] = datetime.now()
+                    break
         
-        for detection in detections:
-            if detection['type'] in ['face', 'person'] and detection.get('confidence', 0) >= 0.8:
+        # If we have current detections, don't stop
+        if has_current_detections:
+            return False
+        
+        # If no current detections, check cooldown period
+        if stream_name in self.last_detection_times:
+            time_since_last_detection = (datetime.now() - self.last_detection_times[stream_name]).total_seconds()
+            # Keep recording for 3 seconds after last detection to avoid premature stops
+            if time_since_last_detection < 3.0:
                 return False
+        
+        # Stop recording if no detections and cooldown period has passed
         return True
     
     def start_recording(self, stream_name):
@@ -83,8 +103,12 @@ class VideoRecorder:
                 'start_time': datetime.now(),
                 'filepath': filepath,
                 'frame_count': 0,
-                'detection_types': set()
+                'detection_types': set(),
+                'temp_filepath': filepath  # Store original path for potential deletion
             }
+            
+            # Initialize last detection time when starting recording
+            self.last_detection_times[stream_name] = datetime.now()
             
             self.video_writers[stream_name] = video_writer
             logger.info(f"Started recording: {filepath}")
@@ -104,7 +128,21 @@ class VideoRecorder:
             
             duration = (datetime.now() - recording_info['start_time']).total_seconds()
             
-            # Save metadata
+            # Check if recording duration meets minimum threshold
+            if duration < self.min_recording_duration:
+                # Delete the short recording file
+                try:
+                    if os.path.exists(recording_info['filepath']):
+                        os.remove(recording_info['filepath'])
+                        logger.info(f"Deleted short recording ({duration:.1f}s < {self.min_recording_duration}s): {recording_info['filepath']}")
+                except Exception as e:
+                    logger.error(f"Error deleting short recording: {e}")
+                
+                # Don't save metadata for short recordings
+                del self.recording_states[stream_name]
+                return
+            
+            # Save metadata for valid recordings
             metadata = {
                 'stream_name': stream_name,
                 'start_time': recording_info['start_time'].isoformat(),
@@ -120,6 +158,10 @@ class VideoRecorder:
             
             logger.info(f"Stopped recording: {duration:.1f}s, {recording_info['frame_count']} frames")
             del self.recording_states[stream_name]
+            
+            # Clean up last detection time
+            if stream_name in self.last_detection_times:
+                del self.last_detection_times[stream_name]
     
     def write_buffered_frames(self, stream_name):
         """Write buffered frames to recording"""
@@ -193,12 +235,14 @@ class VideoRecorder:
                     'start_time': recording_info['start_time'].isoformat(),
                     'duration_seconds': duration,
                     'frame_count': recording_info['frame_count'],
-                    'detection_types': list(recording_info['detection_types'])
+                    'detection_types': list(recording_info['detection_types']),
+                    'min_duration': self.min_recording_duration
                 }
             else:
                 return {
                     'is_recording': False,
-                    'buffer_frames': len(self.frame_buffers.get(stream_name, deque()))
+                    'buffer_frames': len(self.frame_buffers.get(stream_name, deque())),
+                    'min_duration': self.min_recording_duration
                 }
     
     def get_all_recordings(self):
