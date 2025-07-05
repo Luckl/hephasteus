@@ -14,6 +14,7 @@ from camera_stream import CameraStream, stream_camera
 from network_discovery import run_discovery
 from udp_listener import start_udp_listener, stop_udp_listener
 from video_recorder import get_video_recorder
+from video_analyzer import get_video_analyzer
 
 # Configure logging
 logging.basicConfig(
@@ -294,6 +295,15 @@ def get_all_recordings():
     recorder = get_video_recorder()
     recordings = recorder.get_all_recordings()
     
+    # Add analysis status to each recording
+    analyzer = get_video_analyzer()
+    for recording in recordings:
+        filepath = recording['filepath']
+        analysis_path = filepath.replace('.mp4', '_analysis.json')
+        recording['has_analysis'] = os.path.exists(analysis_path)
+        if recording['has_analysis']:
+            recording['analysis_path'] = analysis_path
+    
     return jsonify({
         'recordings': recordings,
         'total_count': len(recordings)
@@ -309,6 +319,57 @@ def download_recording(filename):
         return jsonify({'error': 'Recording not found'}), 404
     
     return send_file(filepath, as_attachment=True)
+
+# Video Analysis API endpoints
+@app.route('/api/recordings/<filename>/analyze', methods=['POST'])
+def analyze_recording(filename):
+    """Analyze a recorded video using Gemini 2.5 Flash"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Recording not found'}), 404
+    
+    analyzer = get_video_analyzer()
+    result = analyzer.analyze_video(filepath)
+    
+    if 'error' in result:
+        return jsonify(result), 500
+    
+    return jsonify({
+        'message': 'Video analysis completed successfully',
+        'analysis': result,
+        'analysis_file': filepath.replace('.mp4', '_analysis.json')
+    })
+
+@app.route('/api/recordings/<filename>/analysis', methods=['GET'])
+def get_recording_analysis(filename):
+    """Get analysis for a recorded video"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Recording not found'}), 404
+    
+    analyzer = get_video_analyzer()
+    result = analyzer.get_analysis(filepath)
+    
+    if 'error' in result:
+        return jsonify(result), 404
+    
+    return jsonify(result)
+
+@app.route('/api/recordings/<filename>/analysis.json', methods=['GET'])
+def download_analysis(filename):
+    """Download the analysis JSON file for a recording"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    analysis_path = filepath.replace('.mp4', '_analysis.json')
+    
+    if not os.path.exists(analysis_path):
+        return jsonify({'error': 'Analysis not found'}), 404
+    
+    return send_file(analysis_path, as_attachment=True, mimetype='application/json')
 
 @socketio.on('connect')
 def handle_connect():
@@ -378,6 +439,10 @@ if __name__ == '__main__':
     logger.info("  GET  /api/streams/<name>/recording/status - Get recording status")
     logger.info("  GET  /api/recordings - List all recordings")
     logger.info("  GET  /api/recordings/<filename> - Download recording")
+    logger.info("Video Analysis endpoints:")
+    logger.info("  POST /api/recordings/<filename>/analyze - Analyze recording")
+    logger.info("  GET  /api/recordings/<filename>/analysis - Get recording analysis")
+    logger.info("  GET  /api/recordings/<filename>/analysis.json - Download analysis JSON")
     logger.info("Example ESP32 endpoints:")
     logger.info("  http://<esp32-ip>/capture  - Get JPEG snapshot")
     logger.info("  http://<esp32-ip>/stream   - Get MJPEG stream")

@@ -806,5 +806,181 @@
         // Initialize dashboard
         initDashboard();
     </script>
+
+    <!-- Recordings Section -->
+    <div class="recordings-section" style="margin-top: 30px;">
+        <div class="header">
+            <h2>Recorded Videos</h2>
+            <p>View and analyze recorded videos</p>
+        </div>
+        
+        <div class="controls">
+            <button class="btn btn-info" onclick="loadRecordings()">Refresh Recordings</button>
+        </div>
+        
+        <div id="recordings-grid" class="streams-grid">
+            <!-- Recordings will be loaded here -->
+        </div>
+    </div>
+
+    <script>
+        // Recordings functionality
+        let recordings = [];
+
+        async function loadRecordings() {
+            try {
+                const response = await fetch('/api/recordings');
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    recordings = data.recordings;
+                    displayRecordings();
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error loading recordings:', error);
+                alert('Error loading recordings');
+            }
+        }
+
+        function displayRecordings() {
+            const grid = document.getElementById('recordings-grid');
+            grid.innerHTML = '';
+            
+            if (recordings.length === 0) {
+                grid.innerHTML = '<div style="color: white; text-align: center; grid-column: 1 / -1;">No recordings found</div>';
+                return;
+            }
+            
+            recordings.forEach(recording => {
+                const card = document.createElement('div');
+                card.className = 'stream-card';
+                
+                const createdDate = new Date(recording.created_time).toLocaleString();
+                const fileSizeMB = recording.file_size_mb.toFixed(2);
+                
+                card.innerHTML = `
+                    <div class="stream-header">
+                        <div class="stream-title">${recording.filename}</div>
+                        <div class="stream-status ${recording.has_analysis ? 'status-active' : 'status-inactive'}">
+                            ${recording.has_analysis ? 'Analyzed' : 'Not Analyzed'}
+                        </div>
+                    </div>
+                    <div class="stream-info">
+                        <div class="info-item">
+                            <span class="info-label">Created:</span> ${createdDate}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Size:</span> ${fileSizeMB} MB
+                        </div>
+                        ${recording.metadata ? `
+                        <div class="info-item">
+                            <span class="info-label">Duration:</span> ${recording.metadata.duration_seconds ? recording.metadata.duration_seconds.toFixed(1) + 's' : 'Unknown'}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Frames:</span> ${recording.metadata.frame_count || 'Unknown'}
+                        </div>
+                        ` : ''}
+                    </div>
+                    <div class="stream-controls">
+                        <button class="btn btn-primary" onclick="downloadRecording('${recording.filename}')">Download</button>
+                        ${recording.has_analysis ? 
+                            `<button class="btn btn-info" onclick="viewAnalysis('${recording.filename}')">View Analysis</button>
+                             <button class="btn btn-warning" onclick="downloadAnalysis('${recording.filename}')">Download Analysis</button>` :
+                            `<button class="btn btn-warning" onclick="analyzeRecording('${recording.filename}')">Analyze with Gemini</button>`
+                        }
+                    </div>
+                `;
+                
+                grid.appendChild(card);
+            });
+        }
+
+        async function downloadRecording(filename) {
+            try {
+                window.open(`/api/recordings/${encodeURIComponent(filename)}`, '_blank');
+            } catch (error) {
+                console.error('Error downloading recording:', error);
+                alert('Error downloading recording');
+            }
+        }
+
+        async function analyzeRecording(filename) {
+            if (!confirm(`Analyze "${filename}" with Gemini 2.5 Flash? This may take a few minutes.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/recordings/${encodeURIComponent(filename)}/analyze`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert('Video analysis completed successfully!');
+                    await loadRecordings(); // Refresh to show analysis status
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error analyzing recording:', error);
+                alert('Error analyzing recording');
+            }
+        }
+
+        async function viewAnalysis(filename) {
+            try {
+                const response = await fetch(`/api/recordings/${encodeURIComponent(filename)}/analysis`);
+                
+                if (response.ok) {
+                    const analysis = await response.json();
+                    
+                    // Create a formatted display of the analysis
+                    let analysisText = 'Video Analysis Results:\n\n';
+                    
+                    if (analysis.events) {
+                        analysis.events.forEach((event, index) => {
+                            analysisText += `Event ${index + 1}:\n`;
+                            analysisText += `Description: ${event.description}\n`;
+                            analysisText += `Time: ${event.start_time} to ${event.end_time}\n`;
+                            if (event.objects_affected) {
+                                analysisText += 'Objects:\n';
+                                event.objects_affected.forEach(obj => {
+                                    analysisText += `  - ${obj.type}: ${obj.start_location_description} → ${obj.end_location_description}\n`;
+                                });
+                            }
+                            analysisText += '\n';
+                        });
+                    } else {
+                        analysisText += JSON.stringify(analysis, null, 2);
+                    }
+                    
+                    // Show in a modal or alert
+                    alert(analysisText);
+                } else {
+                    const error = await response.json();
+                    alert(`Error: ${error.error}`);
+                }
+            } catch (error) {
+                console.error('Error viewing analysis:', error);
+                alert('Error viewing analysis');
+            }
+        }
+
+        async function downloadAnalysis(filename) {
+            try {
+                window.open(`/api/recordings/${encodeURIComponent(filename)}/analysis.json`, '_blank');
+            } catch (error) {
+                console.error('Error downloading analysis:', error);
+                alert('Error downloading analysis');
+            }
+        }
+
+        // Load recordings on page load
+        loadRecordings();
+    </script>
 </body>
 </html> 
