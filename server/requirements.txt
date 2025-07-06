@@ -1,12 +1,18 @@
 Flask==2.3.3
 Flask-SocketIO==5.3.6
 Flask-APScheduler==1.13.0
+Flask-Cors==4.0.0
 requests==2.31.0
 python-socketio==5.8.0
 python-dotenv==1.0.0
-opencv-python==4.7.0.72
+opencv-python==4.8.1.78
 numpy==1.24.3
-ultralytics==8.3.161
-google-generativeai==0.8.5
-pydantic==2.11.7 
+ultralytics==8.0.196
+torch==2.0.1
+torchvision==0.15.2
+google-generativeai==0.3.2
+pydantic==2.5.0
+transformers==4.35.2
+Pillow==10.0.1
+eventlet==0.33.3 
  

@@ -15,6 +15,7 @@ from network_discovery import run_discovery
 from udp_listener import start_udp_listener, stop_udp_listener
 from video_recorder import get_video_recorder
 from video_analyzer import get_video_analyzer
+from florence2_detector import process_video_with_florence2
 
 # Configure logging
 logging.basicConfig(
@@ -395,6 +396,36 @@ def ask_question_about_recording(filename):
         'message': 'Question answered successfully',
         'result': result
     })
+
+@app.route('/api/recordings/<filename>/analyze-florence2', methods=['POST'])
+def analyze_recording_with_florence2(filename):
+    """Analyze a recorded video with Florence 2 object detection"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Recording not found'}), 404
+    
+    try:
+        # Create output path for Florence 2 processed video
+        base_name = os.path.splitext(filename)[0]
+        output_filename = f"{base_name}_florence2.mp4"
+        output_path = os.path.join(recorder.output_dir, output_filename)
+        
+        # Process video with Florence 2
+        result = process_video_with_florence2(filepath, output_path)
+        
+        if 'error' in result:
+            return jsonify(result), 500
+        
+        return jsonify({
+            'message': 'Florence 2 analysis completed successfully',
+            'result': result
+        })
+        
+    except Exception as e:
+        logger.error(f"Florence 2 analysis error for {filename}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @socketio.on('connect')
 def handle_connect():

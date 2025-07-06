@@ -233,8 +233,8 @@ def draw_detections(frame, detections):
     
     return frame
 
-def process_frame_with_cv(frame_data):
-    """Process frame with computer vision"""
+def process_frame_for_display(frame_data):
+    """Process frame with computer vision for display (with bounding boxes)"""
     try:
         # Decode base64 frame
         frame_bytes = base64.b64decode(frame_data)
@@ -261,9 +261,38 @@ def process_frame_with_cv(frame_data):
         _, buffer = cv2.imencode('.jpg', frame_with_boxes, [cv2.IMWRITE_JPEG_QUALITY, 85])
         processed_frame_data = base64.b64encode(buffer).decode('utf-8')
         
-        # Return only person detections for recording triggers, but show all objects visually
+        # Return processed frame with boxes for display, and person detections for recording triggers
         return processed_frame_data, person_detections
         
     except Exception as e:
-        logger.error(f"Computer vision processing error: {e}")
+        logger.error(f"Computer vision display processing error: {e}")
+        return frame_data, []
+
+def process_frame_for_recording(frame_data):
+    """Process frame for recording (clean frame without bounding boxes)"""
+    try:
+        # Decode base64 frame
+        frame_bytes = base64.b64decode(frame_data)
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            return frame_data, []
+        
+        # Get person detections for recording triggers (only persons)
+        person_detections = detect_persons(frame)
+        if person_detections:
+            logger.info(f"Person detections found for recording: {len(person_detections)}")
+            for det in person_detections:
+                logger.info(f"Person detection for recording: {det}")
+        
+        # Return clean frame (no bounding boxes) for recording, and person detections for triggers
+        # Encode the original frame without any modifications
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        clean_frame_data = base64.b64encode(buffer).decode('utf-8')
+        
+        return clean_frame_data, person_detections
+        
+    except Exception as e:
+        logger.error(f"Computer vision recording processing error: {e}")
         return frame_data, [] 

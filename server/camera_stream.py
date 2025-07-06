@@ -7,8 +7,8 @@ from datetime import datetime
 from flask_socketio import SocketIO
 
 # Import our modules
-from computer_vision import process_frame_with_cv
-from video_recorder import process_frame_for_recording
+from computer_vision import process_frame_for_display, process_frame_for_recording
+from video_recorder import process_frame_for_recording as record_frame
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ class CameraStream:
                     # Process with computer vision (for monitoring only)
                     if self.cv_enabled:
                         try:
-                            processed_frame, detections = process_frame_with_cv(frame_data)
+                            # Use recording processing for background detection (clean frame, person detections only)
+                            clean_frame, detections = process_frame_for_recording(frame_data)
                             self.cv_detections = detections
                             self.last_detection_time = datetime.now()
                             
@@ -182,27 +183,30 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             
                             # Apply computer vision processing if enabled (for display)
                             detections = []
+                            display_frame_data = frame_data  # Default to original frame
                             if stream.cv_enabled:
                                 try:
-                                    processed_frame, detections = process_frame_with_cv(frame_data)
+                                    # Process frame for display (with bounding boxes)
+                                    processed_frame, detections = process_frame_for_display(frame_data)
                                     # Use detections from background thread if available and more recent
                                     if stream.cv_detections and stream.last_detection_time:
                                         # Use background detections if they're recent (within last 5 seconds)
                                         time_diff = (datetime.now() - stream.last_detection_time).total_seconds()
                                         if time_diff < 5.0:
                                             detections = stream.cv_detections
-                                    frame_data = processed_frame
+                                    display_frame_data = processed_frame
                                 except Exception as e:
-                                    logger.error(f"Computer vision processing error for {name}: {e}")
+                                    logger.error(f"Computer vision display processing error for {name}: {e}")
                                     # Continue with original frame if CV fails
                             
-                            # Process video recording if enabled (using full frame rate)
+                            # Process video recording if enabled (using clean frames without bounding boxes)
                             if stream.recording_enabled:
                                 try:
                                     current_time = datetime.now()
                                     # Use detections from background thread for recording decisions
                                     recording_detections = stream.cv_detections if stream.cv_detections else detections
-                                    process_frame_for_recording(name, frame_data, recording_detections, current_time)
+                                    # Use clean frame data (original frame without bounding boxes) for recording
+                                    record_frame(name, frame_data, recording_detections, current_time)
                                 except Exception as e:
                                     logger.error(f"Video recording error for {name}: {e}")
                             
@@ -219,15 +223,15 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                                 if time_diff > 0:
                                     stream.fps = len(frame_times) / time_diff
                             
-                            stream.last_frame = frame_data
+                            stream.last_frame = display_frame_data  # Store display frame (with boxes) for UI
                             stream.last_frame_time = current_time
                             stream.frame_count += 1
                             
-                            # Emit frame to connected clients
+                            # Emit frame to connected clients (display frame with bounding boxes)
                             if stream.connected_clients:
                                 socketio.emit('frame', {
                                     'stream_name': name,
-                                    'frame_data': frame_data,
+                                    'frame_data': display_frame_data,  # Display frame with boxes
                                     'timestamp': current_time.isoformat(),
                                     'frame_count': stream.frame_count,
                                     'detections': stream.cv_detections if stream.cv_enabled else []
