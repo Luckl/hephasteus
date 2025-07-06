@@ -106,26 +106,26 @@ void setup() {
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
-  config.frame_size = FRAMESIZE_VGA;  // Optimized for 800x600 performance
+  config.xclk_freq_hz = 24000000;  // Increased for better performance
+  config.frame_size = FRAMESIZE_SVGA;  // 800x600 for higher quality
   config.pixel_format = PIXFORMAT_JPEG;  // for streaming
   //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
   config.grab_mode = CAMERA_GRAB_LATEST;  // Always get the latest frame
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 15;  // Slightly lower quality for better performance
-  config.fb_count = 2;  // More frame buffers for better performance
+  config.jpeg_quality = 8;  // Higher quality (lower number = better quality)
+  config.fb_count = 3;  // More frame buffers for smoother streaming
 
   // if PSRAM IC present, init with optimized settings for streaming
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
-      config.jpeg_quality = 15;  // Balanced quality/performance
-      config.fb_count = 2;  // More buffers for smoother streaming
+      config.jpeg_quality = 8;  // High quality for PSRAM
+      config.fb_count = 3;  // More buffers for smoother streaming
       config.grab_mode = CAMERA_GRAB_LATEST;  // Always get latest frame
     } else {
       // Limit the frame size when PSRAM is not available
-      config.frame_size = FRAMESIZE_QVGA;
+      config.frame_size = FRAMESIZE_VGA;
       config.fb_location = CAMERA_FB_IN_DRAM;
-      config.jpeg_quality = 20;  // Lower quality for DRAM
+      config.jpeg_quality = 12;  // Better quality even for DRAM
     }
   } else {
     // Best option for face detection/recognition
@@ -154,23 +154,23 @@ void setup() {
     s->set_brightness(s, 1);   // up the brightness just a bit
     s->set_saturation(s, -2);  // lower the saturation
   }
-  // Optimize for streaming performance
+  // Optimize for high quality streaming
   if (config.pixel_format == PIXFORMAT_JPEG) {
-    s->set_framesize(s, FRAMESIZE_VGA);  // 800x600 for good performance
-    s->set_quality(s, 15);  // Balanced quality/performance
-    s->set_brightness(s, 0);  // Default brightness
-    s->set_contrast(s, 0);   // Default contrast
-    s->set_saturation(s, 0); // Default saturation
+    s->set_framesize(s, FRAMESIZE_SVGA);  // 800x600 for high quality
+    s->set_quality(s, 8);  // High quality (lower number = better quality)
+    s->set_brightness(s, 1);  // Slightly increased brightness
+    s->set_contrast(s, 1);   // Slightly increased contrast
+    s->set_saturation(s, 1); // Slightly increased saturation
     s->set_special_effect(s, 0); // No special effects
     s->set_whitebal(s, 1);   // Enable white balance
     s->set_awb_gain(s, 1);   // Enable AWB gain
     s->set_wb_mode(s, 0);    // Auto white balance
     s->set_exposure_ctrl(s, 1); // Enable exposure control
-    s->set_aec2(s, 0);       // Disable AEC2 for better performance
+    s->set_aec2(s, 1);       // Enable AEC2 for better exposure
     s->set_gain_ctrl(s, 1);  // Enable gain control
     s->set_agc_gain(s, 0);   // Default AGC gain
-    s->set_gainceiling(s, (gainceiling_t)0); // Default gain ceiling
-    s->set_bpc(s, 0);        // Disable BPC for performance
+    s->set_gainceiling(s, (gainceiling_t)2); // Higher gain ceiling for better low light
+    s->set_bpc(s, 1);        // Enable BPC for better quality
     s->set_wpc(s, 1);        // Enable WPC
     s->set_raw_gma(s, 1);    // Enable raw gamma
     s->set_lenc(s, 1);       // Enable lens correction
