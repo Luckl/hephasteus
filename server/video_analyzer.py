@@ -326,6 +326,67 @@ class VideoAnalyzer:
         else:
             return {"error": "Analysis not found"}
 
+    def ask_question_about_video(self, video_path, question):
+        """Ask a specific question about a video using Gemini"""
+        if not self.model:
+            return {"error": "Gemini API key not configured"}
+        
+        try:
+            # Read the video file
+            with open(video_path, 'rb') as video_file:
+                video_data = video_file.read()
+            
+            # Create the prompt with the specific question
+            prompt = f"""
+            You are analyzing a video to answer a specific question. Please watch the video carefully and provide a detailed answer.
+
+            Question: {question}
+
+            Please provide a comprehensive answer based on what you observe in the video. Be as specific as possible about:
+            - What you see happening
+            - When things occur (if timing is relevant)
+            - Where objects or people are located
+            - Any details that are relevant to the question
+
+            Answer the question as accurately as possible based on the video content.
+            """
+            
+            # Create the generation config
+            generation_config = genai.types.GenerationConfig(
+                temperature=0.1,
+                top_p=0.8,
+                top_k=40,
+                max_output_tokens=4096,
+            )
+            
+            # Ask the question
+            logger.info(f"Asking question about video: {video_path}")
+            logger.info(f"Question: {question}")
+            
+            response = self.model.generate_content(
+                [prompt, {"mime_type": "video/mp4", "data": video_data}],
+                generation_config=generation_config
+            )
+            
+            # Get the response
+            answer = response.text
+            
+            # Create response data
+            question_data = {
+                "question": question,
+                "answer": answer,
+                "video_path": video_path,
+                "timestamp": datetime.now().isoformat(),
+                "model_used": "gemini-2.0-flash-exp"
+            }
+            
+            logger.info(f"Question answered successfully for: {video_path}")
+            return question_data
+            
+        except Exception as e:
+            logger.error(f"Error asking question about video {video_path}: {e}")
+            return {"error": str(e)}
+
 # Global instance
 video_analyzer = None
 

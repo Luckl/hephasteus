@@ -371,6 +371,31 @@ def download_analysis(filename):
     
     return send_file(analysis_path, as_attachment=True, mimetype='application/json')
 
+@app.route('/api/recordings/<filename>/ask', methods=['POST'])
+def ask_question_about_recording(filename):
+    """Ask a question about a recorded video using Gemini"""
+    recorder = get_video_recorder()
+    filepath = os.path.join(recorder.output_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Recording not found'}), 404
+    
+    data = request.get_json()
+    if not data or 'question' not in data:
+        return jsonify({'error': 'Question is required'}), 400
+    
+    question = data['question']
+    analyzer = get_video_analyzer()
+    result = analyzer.ask_question_about_video(filepath, question)
+    
+    if 'error' in result:
+        return jsonify(result), 500
+    
+    return jsonify({
+        'message': 'Question answered successfully',
+        'result': result
+    })
+
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
