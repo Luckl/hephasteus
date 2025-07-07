@@ -1,67 +1,65 @@
-# ESP32 Multi-Stream Camera Server
+# ESP32 Camera Server
 
-A Python Flask server for managing and streaming video from ESP32-CAM devices.
+A Python Flask server for managing and streaming ESP32-CAM devices with computer vision capabilities.
 
-## Module Structure
+## Features
 
-The server has been split into logical modules for better maintainability:
+- Real-time video streaming from ESP32-CAM devices
+- Automatic device discovery via UDP broadcast
+- Computer vision processing with YOLO object detection
+- Video recording and playback
+- Web-based dashboard for device management
+- RESTful API for integration
+- WebSocket support for real-time updates
 
-### `app.py` - Main Application
-- Flask application setup and configuration
-- REST API endpoints for stream management
-- WebSocket event handlers
-- Application startup and shutdown logic
+## Installation
 
-### `camera_stream.py` - Camera Streaming
-- `CameraStream` class for managing individual camera connections
-- `stream_camera()` function for background MJPEG streaming
-- Camera URL generation and stream processing logic
+1. Install Python dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-### `network_discovery.py` - Network Discovery
-- Network interface detection and parsing (Windows/Linux/Mac)
-- Broadcast address calculation
-- Interface selection logic for ESP32 discovery
-- `run_discovery()` function for broadcasting discovery requests
+2. Run the server:
+```bash
+python app.py
+```
 
-### `udp_listener.py` - UDP Communication
-- UDP listener thread for receiving ESP32 responses
-- Camera discovery event handling
-- Socket management and cleanup
-
-## Key Features
-
-- **Automatic Discovery**: Broadcasts UDP discovery messages to find ESP32 cameras
-- **Multi-Stream Support**: Manages multiple camera streams simultaneously
-- **MJPEG Streaming**: High-performance streaming using MJPEG protocol
-- **WebSocket Real-time Updates**: Live video streaming to web clients
-- **Cross-platform Network Detection**: Works on Windows, Linux, and Mac
+The server will start on `http://localhost:5000`
 
 ## API Endpoints
 
-- `GET /` - Main dashboard
 - `GET /api/streams` - List all camera streams
-- `POST /api/streams` - Add new camera stream
-- `DELETE /api/streams/<name>` - Remove camera stream
-- `POST /api/streams/<name>/start` - Start streaming from camera
-- `POST /api/streams/<name>/stop` - Stop streaming from camera
-- `GET /api/streams/<name>/snapshot` - Get single snapshot
-- `GET /api/streams/<name>/status` - Get camera status
+- `POST /api/streams` - Add a new camera stream
+- `DELETE /api/streams/<name>` - Remove a camera stream
+- `POST /api/streams/<name>/start` - Start streaming from a camera
+- `POST /api/streams/<name>/stop` - Stop streaming from a camera
+- `GET /api/streams/<name>/snapshot` - Get a snapshot from a camera
+- `POST /api/streams/<name>/cv/toggle` - Toggle computer vision processing
+- `GET /api/streams/<name>/cv/detections` - Get current detections
 
-## WebSocket Events
+## Computer Vision
 
-- `connect` - Client connection
-- `disconnect` - Client disconnection
-- `join_stream` - Join a specific camera stream
-- `leave_stream` - Leave a camera stream
-- `frame` - Video frame data (emitted to clients)
-- `camera_discovered` - New camera discovered (emitted to clients)
+The server supports real-time object detection using YOLO models:
 
-## Dependencies
+- YOLOv8n (default) - Fast and lightweight
+- YOLOv11n - Latest model with improved accuracy
+- Florence2 - Advanced vision model for detailed analysis
 
-- Flask
-- Flask-SocketIO
-- Flask-APScheduler
-- requests
-- threading
-- socket
-- logging 
+## Video Recording
+
+- Automatic recording based on motion detection
+- Manual recording controls
+- Video playback and analysis
+- Export capabilities
+
+## Docker Support
+
+Run the server in a Docker container:
+
+```bash
+docker-compose up -d
+```
+
+## License
+
+This project is licensed under the MIT License. 

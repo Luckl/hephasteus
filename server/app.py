@@ -19,7 +19,7 @@ from florence2_detector import process_video_with_florence2
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -41,6 +41,8 @@ camera_streams = {}
 stream_threads = {}
 discovery_running = False  # Add this global variable
 scheduler_initialized = False  # Add this flag to prevent multiple initializations
+
+
 
 def start_scheduler():
     """Start the Flask-APScheduler with discovery job"""
