@@ -3,7 +3,6 @@ import subprocess
 import platform
 import re
 import socket
-import requests
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -64,48 +63,25 @@ def parse_windows_ipconfig(output):
     for line in output.split('\n'):
         line = line.strip()
         
-        # Skip empty lines
-        if not line:
-            continue
-            
-        # New interface section - starts with adapter name and ends with colon
-        if line.endswith(':') and not line.startswith(' '):
-            # Save previous interface if it has data
-            if current_interface and 'name' in current_interface:
+        # Interface name
+        if line and not line.startswith(' ') and ':' in line and not line.startswith('Windows'):
+            if current_interface:
                 interfaces.append(current_interface)
-            
-            # Start new interface
-            current_interface = {'name': line[:-1].strip()}  # Remove the colon
+            current_interface = {'name': line.split(':')[0]}
         
-        # IPv4 Address
-        elif 'IPv4 Address' in line and ':' in line:
-            parts = line.split(':')
-            if len(parts) >= 2:
-                ip = parts[1].strip()
-                # Remove "(Preferred)" suffix if present
-                if '(Preferred)' in ip:
-                    ip = ip.replace('(Preferred)', '').strip()
-                if ip and ip != '(Preferred)':
-                    current_interface['ip'] = ip
+        # IP address
+        elif 'IPv4 Address' in line:
+            match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+            if match:
+                current_interface['ip'] = match.group(1)
         
-        # Subnet Mask
-        elif 'Subnet Mask' in line and ':' in line:
-            parts = line.split(':')
-            if len(parts) >= 2:
-                mask = parts[1].strip()
-                if mask:
-                    current_interface['subnet'] = mask
-        
-        # Default Gateway
-        elif 'Default Gateway' in line and ':' in line:
-            parts = line.split(':')
-            if len(parts) >= 2:
-                gateway = parts[1].strip()
-                if gateway:
-                    current_interface['gateway'] = gateway
+        # Subnet mask
+        elif 'Subnet Mask' in line:
+            match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+            if match:
+                current_interface['subnet'] = match.group(1)
     
-    # Don't forget the last interface
-    if current_interface and 'name' in current_interface:
+    if current_interface:
         interfaces.append(current_interface)
     
     return interfaces
@@ -223,7 +199,8 @@ def select_best_interface(interfaces):
         
         # Skip loopback and link-local addresses
         if (ip.startswith('127.') or 
-            ip.startswith('169.254.')):
+            ip.startswith('169.254.') or
+            ip.startswith('10.255.255.')):  # Skip WSL2 loopback addresses
             logger.debug(f"Skipping interface {iface['name']} ({ip}) - loopback or link-local")
             continue
         
@@ -245,8 +222,23 @@ def select_best_interface(interfaces):
         else:
             logger.debug(f"Rejecting interface {iface['name']} ({ip}) - no broadcast address")
     
-    # Sort by preference: prefer interfaces with gateways (connected to router)
-    valid_interfaces.sort(key=lambda x: 'gateway' not in x)
+    # Sort by preference: prefer actual network interfaces over loopback
+    # Give higher priority to interfaces that look like real network interfaces
+    def interface_priority(iface):
+        name = iface.get('name', '').lower()
+        ip = iface.get('ip', '')
+        
+        # Highest priority: eth0, wlan0, etc. (real network interfaces)
+        if name in ['eth0', 'wlan0', 'en0', 'en1', 'wlan1']:
+            return 0
+        # Medium priority: other interfaces with private IP ranges
+        elif ip.startswith('192.168.') or ip.startswith('10.') or ip.startswith('172.'):
+            return 1
+        # Lower priority: everything else
+        else:
+            return 2
+    
+    valid_interfaces.sort(key=interface_priority)
     
     if valid_interfaces:
         selected = valid_interfaces[0]
@@ -255,44 +247,6 @@ def select_best_interface(interfaces):
     
     logger.warning("No suitable network interfaces found")
     return None
-
-def get_windows_host_ip():
-    """Get the Windows host IP from /etc/resolv.conf (nameserver entry)"""
-    try:
-        with open('/etc/resolv.conf', 'r') as f:
-            for line in f:
-                if line.startswith('nameserver'):
-                    return line.strip().split()[1]
-    except Exception as e:
-        logger.warning(f"Could not read Windows host IP from /etc/resolv.conf: {e}")
-    return None
-
-def send_http_relay_discovery(windows_host_ip, message="DISCOVER_CAMERAS", port=8888):
-    """Send discovery request via HTTP to Windows relay server"""
-    try:
-        relay_url = f"http://{windows_host_ip}:5001/relay/discover"
-        payload = {
-            'message': message,
-            'port': port
-        }
-        
-        logger.debug(f"Sending HTTP relay request to {relay_url}")
-        response = requests.post(relay_url, json=payload, timeout=5)
-        
-        if response.status_code == 200:
-            result = response.json()
-            logger.debug(f"HTTP relay successful: {result}")
-            return True
-        else:
-            logger.warning(f"HTTP relay failed with status {response.status_code}: {response.text}")
-            return False
-            
-    except requests.exceptions.ConnectionError:
-        logger.warning(f"Could not connect to HTTP relay at {windows_host_ip}:5001")
-        return False
-    except Exception as e:
-        logger.warning(f"HTTP relay error: {e}")
-        return False
 
 def run_discovery():
     """Broadcast discovery requests to ESP32 cameras"""
@@ -331,7 +285,7 @@ def run_discovery():
         logger.debug(f"Successfully bound to interface {network_ip}")
         
         try:
-            # Send discovery request to multiple broadcast addresses
+            # Send discovery request to broadcast address
             discovery_request = "DISCOVER_CAMERAS"
             broadcast_addresses = [
                 (broadcast_ip, 8888),  # Interface-specific broadcast
@@ -345,17 +299,6 @@ def run_discovery():
                     logger.debug(f"Sent {bytes_sent} bytes: {discovery_request} to {broadcast_addr}")
                 except Exception as e:
                     logger.debug(f"Failed to send to {broadcast_addr}: {e}")
-            
-            # Try HTTP relay as backup (but don't fail if it doesn't work)
-            windows_host_ip = get_windows_host_ip()
-            if windows_host_ip:
-                logger.debug(f"Attempting HTTP relay to Windows host {windows_host_ip}")
-                try:
-                    send_http_relay_discovery(windows_host_ip, discovery_request, 8888)
-                except Exception as e:
-                    logger.debug(f"HTTP relay failed (this is expected in WSL2): {e}")
-            else:
-                logger.debug("Windows host IP not found; skipping HTTP relay.")
             
         finally:
             logger.debug("Closing broadcast socket")
