@@ -16,7 +16,7 @@ def get_yolo_model():
     global yolo_model
     if yolo_model is None:
         try:
-            torch.serialization.add_safe_globals([ultralytics.nn.tasks.DetectionModel, torch.nn.modules.container.Sequential, ultralytics.nn.modules.Conv, torch.nn.modules.linear.Linear])
+            # torch.serialization.add_safe_globals([ultralytics.nn.tasks.DetectionModel, torch.nn.modules.container.Sequential, ultralytics.nn.modules.Conv, torch.nn.modules.linear.Linear])
 
             
             logger.info("Loading YOLOv11 model...")
@@ -24,7 +24,7 @@ def get_yolo_model():
             yolo_model = YOLO('yolo11n.pt')
             logger.info("YOLOv11 model loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to load YOLOv8 model: {e}")
+            logger.error(f"Failed to load YOLOv11 model: {e}")
             yolo_model = None
     return yolo_model
 
@@ -71,16 +71,17 @@ def detect_persons(frame):
                                     'confidence': confidence
                                 })
                                 
-                                logger.debug(f"YOLOv8 person detected: confidence={confidence:.3f}, bbox=[{x1}, {y1}, {width}, {height}]")
+                                # Only log at debug level to reduce verbosity
+                                logger.debug(f"Person detected: {confidence:.3f}")
         
+        # Only log summary at info level if detections found
         if person_detections:
-            logger.info(f"YOLOv8 person detections found: {len(person_detections)}")
+            logger.debug(f"Person detections found: {len(person_detections)}")
         
         return person_detections
         
     except Exception as e:
         logger.error(f"YOLOv8 detection error: {e}")
-        logger.error(f"Error type: {type(e).__name__}")
         return []
 
 def detect_all_objects(frame):
@@ -141,19 +142,20 @@ def detect_all_objects(frame):
                                 'class_id': class_id
                             })
                             
-                            logger.debug(f"YOLOv8 {class_name} detected: confidence={confidence:.3f}, bbox=[{x1}, {y1}, {width}, {height}]")
+                            # Only log at debug level to reduce verbosity
+                            logger.debug(f"{class_name} detected: {confidence:.3f}")
         
+        # Only log summary at debug level to reduce verbosity
         if all_detections:
-            logger.info(f"YOLOv8 total detections found: {len(all_detections)}")
-            # Log unique object types detected
+            logger.debug(f"Total detections: {len(all_detections)}")
+            # Log unique object types detected only at debug level
             unique_types = set(det['type'] for det in all_detections)
-            logger.info(f"Object types detected: {', '.join(unique_types)}")
+            logger.debug(f"Object types: {', '.join(unique_types)}")
         
         return all_detections
         
     except Exception as e:
         logger.error(f"YOLOv8 object detection error: {e}")
-        logger.error(f"Error type: {type(e).__name__}")
         return []
 
 def detect_motion(frame, prev_frame=None):
@@ -246,10 +248,6 @@ def process_frame_for_display(frame_data):
         
         # Get person detections for recording triggers (only persons)
         person_detections = detect_persons(frame)
-        if person_detections:
-            logger.info(f"Person detections found: {len(person_detections)}")
-            for det in person_detections:
-                logger.info(f"Person detection: {det}")
         
         # Get all object detections for visualization (including persons)
         all_object_detections = detect_all_objects(frame)
@@ -281,10 +279,6 @@ def process_frame_for_recording(frame_data):
         
         # Get person detections for recording triggers (only persons)
         person_detections = detect_persons(frame)
-        if person_detections:
-            logger.info(f"Person detections found for recording: {len(person_detections)}")
-            for det in person_detections:
-                logger.info(f"Person detection for recording: {det}")
         
         # Return clean frame (no bounding boxes) for recording, and person detections for triggers
         # Encode the original frame without any modifications

@@ -134,6 +134,8 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
     stream_url = stream.get_stream_url()
     
     logger.info(f"Starting MJPEG stream from {stream_url}")
+    logger.info(f"Camera base URL: {stream.base_url}")
+    logger.info(f"Camera IP: {stream.ip_address}, Port: {stream.port}")
     
     while stream.is_active:
         try:
@@ -147,16 +149,21 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                 'Referer': f'http://{stream.ip_address}/',
             }
             
+            logger.info(f"Attempting to connect to stream at {stream_url}")
             response = requests.get(stream_url, stream=True, timeout=30, headers=headers)
+            logger.info(f"Stream connection response status: {response.status_code}")
+            
             if response.status_code == 200:
                 logger.info(f"Successfully connected to MJPEG stream at {stream_url}")
                 
                 # Process MJPEG stream - simplified approach
                 buffer = b''
                 in_image = False
+                frame_count = 0
                 
                 for chunk in response.iter_content(chunk_size=1024):
                     if not stream.is_active:
+                        logger.info(f"Stream stopped for {name}")
                         break
                     
                     buffer += chunk
@@ -178,6 +185,9 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                         in_image = False
                         
                         if len(image_data) > 100:  # Ensure we have a valid image
+                            frame_count += 1
+                            logger.debug(f"Received frame {frame_count} from {name} ({len(image_data)} bytes)")
+                            
                             # Convert to base64 for processing
                             frame_data = base64.b64encode(image_data).decode('utf-8')
                             
@@ -241,16 +251,20 @@ def stream_camera(name, camera_streams, stream_threads, socketio):
                             
             else:
                 logger.error(f"Failed to connect to stream: HTTP {response.status_code}")
+                logger.error(f"Response headers: {dict(response.headers)}")
                 time.sleep(2)
                 
         except requests.exceptions.ConnectionError as e:
             logger.error(f"Connection error to {stream.ip_address}: {str(e)}")
+            logger.error(f"Tried to connect to: {stream_url}")
             time.sleep(2)
         except requests.exceptions.Timeout as e:
             logger.error(f"Timeout error to {stream.ip_address}: {str(e)}")
+            logger.error(f"Tried to connect to: {stream_url}")
             time.sleep(2)
         except Exception as e:
             logger.error(f"Error streaming from {name}: {str(e)}")
+            logger.error(f"Tried to connect to: {stream_url}")
             time.sleep(2)
     
     # Clean up when stream stops

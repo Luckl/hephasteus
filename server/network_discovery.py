@@ -22,9 +22,8 @@ def get_network_interfaces():
             try:
                 result = subprocess.run(['ip', 'addr'], capture_output=True, text=True)
                 if result.returncode == 0:
-                    logger.debug("Using 'ip addr' command to get network interfaces")
+                    # logger.debug("Using 'ip addr' command to get network interfaces")
                     interfaces = parse_linux_ip_addr(result.stdout)
-                    logger.debug(f"Parsed {len(interfaces)} interfaces from 'ip addr'")
                 else:
                     logger.debug(f"'ip addr' failed with return code {result.returncode}")
                     # Fallback to ifconfig
@@ -32,7 +31,6 @@ def get_network_interfaces():
                     if result.returncode == 0:
                         logger.debug("Using 'ifconfig' command to get network interfaces")
                         interfaces = parse_ifconfig(result.stdout)
-                        logger.debug(f"Parsed {len(interfaces)} interfaces from 'ifconfig'")
                     else:
                         logger.debug(f"'ifconfig' failed with return code {result.returncode}")
             except FileNotFoundError:
@@ -41,17 +39,11 @@ def get_network_interfaces():
                 result = subprocess.run(['ifconfig'], capture_output=True, text=True)
                 if result.returncode == 0:
                     interfaces = parse_ifconfig(result.stdout)
-                    logger.debug(f"Parsed {len(interfaces)} interfaces from 'ifconfig'")
                 else:
                     logger.debug(f"'ifconfig' failed with return code {result.returncode}")
                     
     except Exception as e:
         logger.error(f"Error getting network interfaces: {e}")
-    
-    # Log all found interfaces for debugging
-    logger.debug(f"Total interfaces found: {len(interfaces)}")
-    for i, iface in enumerate(interfaces):
-        logger.debug(f"Interface {i}: {iface}")
     
     return interfaces
 
@@ -91,19 +83,15 @@ def parse_linux_ip_addr(output):
     interfaces = []
     current_interface = {}
     
-    logger.debug("Parsing 'ip addr' output...")
-    
     for line in output.split('\n'):
         line = line.strip()
         
         # Interface number and name
         if re.match(r'^\d+:', line):
             if current_interface:
-                logger.debug(f"Completed interface: {current_interface}")
                 interfaces.append(current_interface)
             parts = line.split(':')
             current_interface = {'name': parts[1].strip()}
-            logger.debug(f"Found interface: {current_interface['name']}")
         
         # IP address - look for both IP and broadcast on the same line
         elif 'inet ' in line and 'brd ' in line:
@@ -111,26 +99,21 @@ def parse_linux_ip_addr(output):
             ip_match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)', line)
             if ip_match:
                 current_interface['ip'] = ip_match.group(1)
-                logger.debug(f"  IP: {current_interface['ip']}")
             
             # Extract broadcast address
             brd_match = re.search(r'brd (\d+\.\d+\.\d+\.\d+)', line)
             if brd_match:
                 current_interface['broadcast'] = brd_match.group(1)
-                logger.debug(f"  Broadcast: {current_interface['broadcast']}")
         
         # IP address without broadcast (fallback)
         elif 'inet ' in line and 'brd ' not in line:
             match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)', line)
             if match:
                 current_interface['ip'] = match.group(1)
-                logger.debug(f"  IP: {current_interface['ip']}")
     
     if current_interface:
-        logger.debug(f"Completed interface: {current_interface}")
         interfaces.append(current_interface)
     
-    logger.debug(f"Parsed {len(interfaces)} interfaces from 'ip addr'")
     return interfaces
 
 def parse_ifconfig(output):
@@ -183,25 +166,19 @@ def calculate_broadcast_address(ip, subnet_mask):
 
 def select_best_interface(interfaces):
     """Select the best interface for broadcasting to ESP32 devices"""
-    logger.debug(f"Found {len(interfaces)} network interfaces to evaluate")
     valid_interfaces = []
     
     for iface in interfaces:
-        logger.debug(f"Evaluating interface: {iface}")
-        
         # Skip interfaces without IP
         if 'ip' not in iface:
-            logger.debug(f"Skipping interface {iface.get('name', 'Unknown')} - no IP address")
             continue
             
         ip = iface['ip']
-        logger.debug(f"Interface {iface['name']} has IP: {ip}")
         
         # Skip loopback and link-local addresses
         if (ip.startswith('127.') or 
             ip.startswith('169.254.') or
             ip.startswith('10.255.255.')):  # Skip WSL2 loopback addresses
-            logger.debug(f"Skipping interface {iface['name']} ({ip}) - loopback or link-local")
             continue
         
         # Calculate broadcast address if not provided
@@ -209,18 +186,12 @@ def select_best_interface(interfaces):
             broadcast = calculate_broadcast_address(ip, iface['subnet'])
             if broadcast:
                 iface['broadcast'] = broadcast
-                logger.debug(f"Calculated broadcast {broadcast} for {iface['name']} ({ip})")
-            else:
-                logger.debug(f"Could not calculate broadcast for {iface['name']} ({ip})")
         elif 'broadcast' not in iface:
-            logger.debug(f"No broadcast address and no subnet mask for {iface['name']} ({ip})")
+            continue
         
         # Only include interfaces with broadcast address
         if 'broadcast' in iface:
-            logger.debug(f"Valid interface: {iface['name']} - IP: {ip}, Broadcast: {iface['broadcast']}")
             valid_interfaces.append(iface)
-        else:
-            logger.debug(f"Rejecting interface {iface['name']} ({ip}) - no broadcast address")
     
     # Sort by preference: prefer actual network interfaces over loopback
     # Give higher priority to interfaces that look like real network interfaces
@@ -242,7 +213,6 @@ def select_best_interface(interfaces):
     
     if valid_interfaces:
         selected = valid_interfaces[0]
-        logger.debug(f"Selected interface: {selected['name']} ({selected['ip']})")
         return selected
     
     logger.warning("No suitable network interfaces found")
@@ -250,15 +220,12 @@ def select_best_interface(interfaces):
 
 def run_discovery():
     """Broadcast discovery requests to ESP32 cameras"""
-    logger.debug("Broadcasting ESP32 camera discovery request...")
+    # logger.debug("Broadcasting ESP32 camera discovery request...")
     
     # Get all network interfaces
-    logger.debug("Getting network interfaces...")
     interfaces = get_network_interfaces()
-    logger.debug(f"Found {len(interfaces)} network interfaces")
     
     # Select the best interface
-    logger.debug("Selecting best interface...")
     selected_interface = select_best_interface(interfaces)
     
     if not selected_interface:
@@ -268,21 +235,13 @@ def run_discovery():
     network_ip = selected_interface['ip']
     broadcast_ip = selected_interface['broadcast']
     
-    logger.debug(f"Selected interface: {selected_interface['name']}")
-    logger.debug(f"Local IP: {network_ip}")
-    logger.debug(f"Broadcast IP: {broadcast_ip}")
-    
     try:
         # Create socket for broadcasting
-        logger.debug("Creating UDP socket...")
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        logger.debug("Set SO_BROADCAST option")
         
         # Bind to specific interface to ensure broadcasts go to the right network
-        logger.debug(f"Attempting to bind to {network_ip}:0")
         broadcast_socket.bind((network_ip, 0))
-        logger.debug(f"Successfully bound to interface {network_ip}")
         
         try:
             # Send discovery request to broadcast address
@@ -293,15 +252,13 @@ def run_discovery():
             ]
             
             for broadcast_addr in broadcast_addresses:
-                try:
-                    logger.debug(f"Attempting to send discovery request to {broadcast_addr}")
+                # try:
                     bytes_sent = broadcast_socket.sendto(discovery_request.encode('utf-8'), broadcast_addr)
-                    logger.debug(f"Sent {bytes_sent} bytes: {discovery_request} to {broadcast_addr}")
-                except Exception as e:
-                    logger.debug(f"Failed to send to {broadcast_addr}: {e}")
-            
+                    # logger.debug(f"Sent discovery to {broadcast_addr}")
+                # except Exception as e:
+                    # logger.debug(f"Failed to send to {broadcast_addr}: {e}")
+                    # pass
         finally:
-            logger.debug("Closing broadcast socket")
             broadcast_socket.close()
             
     except Exception as e:

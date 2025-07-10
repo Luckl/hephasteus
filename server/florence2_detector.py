@@ -22,27 +22,40 @@ def get_florence2_model():
     if florence2_model is None:
         try:
             logger.info("Loading Florence 2 model...")
+            logger.info("This may take several minutes on first load (model size: ~3.2GB)")
             
             # Set device and dtype
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
             torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
             
+            logger.info(f"Using device: {device}, dtype: {torch_dtype}")
+            
             # Load Florence 2 model and processor based on official example
             model_name = "microsoft/Florence-2-large"
+            logger.info(f"Downloading/loading model: {model_name}")
+            
+            logger.info("Loading model weights...")
             florence2_model = AutoModelForCausalLM.from_pretrained(
                 model_name, 
                 torch_dtype=torch_dtype, 
                 trust_remote_code=True
             ).to(device)
+            logger.info("Model weights loaded successfully")
+            
+            logger.info("Loading processor...")
             florence2_processor = AutoProcessor.from_pretrained(
                 model_name, 
                 trust_remote_code=True
             )
+            logger.info("Processor loaded successfully")
             
-            logger.info(f"Florence 2 model loaded on {device}")
+            logger.info(f"Florence 2 model loaded successfully on {device}")
                 
         except Exception as e:
             logger.error(f"Failed to load Florence 2 model: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             florence2_model = None
             florence2_processor = None
     
@@ -60,34 +73,46 @@ def detect_objects_with_florence2(frame):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(frame_rgb)
         
-        # Use object detection prompt
-        prompt = "<OD>"
+        # Use dense region caption prompt
+        prompt = "<DENSE_REGION_CAPTION>"
         
         # Prepare inputs
         inputs = processor(text=prompt, images=pil_image, return_tensors="pt")
         
-        # Move inputs to same device as model
+        # Move inputs to device with appropriate dtypes
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
         torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        inputs = {k: v.to(device, torch_dtype) for k, v in inputs.items()}
+        
+        # Convert inputs to device with correct dtypes
+        # input_ids should remain as integers, pixel_values as float
+        processed_inputs = {}
+        for k, v in inputs.items():
+            if k == "input_ids":
+                processed_inputs[k] = v.to(device, dtype=torch.long)  # Keep as integers
+            else:
+                processed_inputs[k] = v.to(device, dtype=torch_dtype)  # Convert to float
         
         # Run inference
         with torch.no_grad():
             generated_ids = model.generate(
-                input_ids=inputs["input_ids"],
-                pixel_values=inputs["pixel_values"],
-                max_new_tokens=4096,
-                num_beams=3,
-                do_sample=False
+                input_ids=processed_inputs["input_ids"],
+                pixel_values=processed_inputs["pixel_values"],
+                max_new_tokens=512,  # Reduced for faster inference
+                num_beams=1,  # Reduced for faster inference
+                do_sample=False,
+                early_stopping=True
             )
         
         # Decode and post-process
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        logger.debug(f"Florence 2 raw output: {generated_text[:200]}...")
+        
         parsed_answer = processor.post_process_generation(
             generated_text, 
             task="<OD>", 
             image_size=(pil_image.width, pil_image.height)
         )
+        logger.debug(f"Florence 2 parsed answer: {parsed_answer}")
         
         detections = []
         
@@ -96,6 +121,8 @@ def detect_objects_with_florence2(frame):
             od_results = parsed_answer['<OD>']
             bboxes = od_results.get('bboxes', [])
             labels = od_results.get('labels', [])
+            
+            logger.debug(f"Florence 2 found {len(bboxes)} bboxes and {len(labels)} labels")
             
             for i, (bbox, label) in enumerate(zip(bboxes, labels)):
                 if len(bbox) >= 4:
@@ -116,18 +143,24 @@ def detect_objects_with_florence2(frame):
                         })
                         
                         logger.debug(f"Florence 2 {label} detected: bbox=[{x1}, {y1}, {width}, {height}]")
+        else:
+            logger.debug("No '<OD>' found in Florence 2 response")
         
         if detections:
             logger.info(f"Florence 2 detections found: {len(detections)}")
             # Log unique object types detected
             unique_types = set(det['type'] for det in detections)
             logger.info(f"Florence 2 object types: {', '.join(unique_types)}")
+        else:
+            logger.debug("No Florence 2 detections found in this frame")
         
         return detections
         
     except Exception as e:
         logger.error(f"Florence 2 detection error: {e}")
         logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return []
 
 def draw_florence2_detections(frame, detections):
@@ -170,8 +203,14 @@ def draw_florence2_detections(frame, detections):
     
     return frame
 
-def process_video_with_florence2(video_path, output_path):
-    """Process a video file with Florence 2 detection and save with bounding boxes"""
+def process_video_with_florence2(video_path, output_path, sample_interval=3):
+    """Process a video file with Florence 2 detection and save with bounding boxes
+    
+    Args:
+        video_path: Path to input video
+        output_path: Path to output video
+        sample_interval: Process every Nth frame (default: 3 for efficiency)
+    """
     try:
         # Load Florence 2 model
         model, processor = get_florence2_model()
@@ -197,35 +236,63 @@ def process_video_with_florence2(video_path, output_path):
             cap.release()
             return {"error": f"Could not create output video: {output_path}"}
         
-        # Process frames
+        # Process frames with sampling for efficiency
         frame_count = 0
         detection_results = []
+        total_detections = 0
         
         logger.info(f"Processing video with Florence 2: {video_path}")
         logger.info(f"Video properties: {width}x{height}, {fps} FPS, {total_frames} frames")
+        logger.info(f"Sampling every {sample_interval} frames for efficiency")
         
+        # Store all frames for output
+        all_frames = []
+        frame_detections = {}  # Map frame number to detections
+        
+        # First pass: collect all frames and detect on sampled frames
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
             frame_count += 1
+            all_frames.append(frame.copy())
             
             # Log progress every 30 frames
             if frame_count % 30 == 0:
                 progress = (frame_count / total_frames) * 100
                 logger.info(f"Florence 2 processing progress: {progress:.1f}% ({frame_count}/{total_frames})")
             
-            # Detect objects
-            detections = detect_objects_with_florence2(frame)
-            
-            # Store detection results
-            if detections:
-                detection_results.append({
-                    'frame': frame_count,
-                    'timestamp': frame_count / fps,
-                    'detections': detections
-                })
+            # Detect objects on sampled frames only
+            if frame_count % sample_interval == 0:
+                detections = detect_objects_with_florence2(frame)
+                frame_detections[frame_count] = detections
+                
+                # Store detection results
+                if detections:
+                    detection_results.append({
+                        'frame': frame_count,
+                        'timestamp': frame_count / fps,
+                        'detections': detections
+                    })
+                    total_detections += len(detections)
+                    logger.debug(f"Frame {frame_count}: Found {len(detections)} detections")
+            else:
+                frame_detections[frame_count] = []
+        
+        # Second pass: write frames with detections
+        logger.info("Writing output video with detections...")
+        for i, frame in enumerate(all_frames, 1):
+            # Get detections for this frame (use nearest sampled frame if not sampled)
+            if i in frame_detections:
+                detections = frame_detections[i]
+            else:
+                # Find nearest sampled frame
+                nearest_sampled = ((i - 1) // sample_interval) * sample_interval + sample_interval
+                if nearest_sampled <= len(all_frames):
+                    detections = frame_detections.get(nearest_sampled, [])
+                else:
+                    detections = []
             
             # Draw detections on frame
             frame_with_boxes = draw_florence2_detections(frame.copy(), detections)
@@ -237,6 +304,8 @@ def process_video_with_florence2(video_path, output_path):
         cap.release()
         out.release()
         
+        logger.info(f"Florence 2 processing completed: {total_detections} total detections across {len(detection_results)} frames")
+        
         # Save detection results
         results_path = output_path.replace('.mp4', '_florence2_detections.json')
         with open(results_path, 'w') as f:
@@ -247,6 +316,7 @@ def process_video_with_florence2(video_path, output_path):
                 'model': 'microsoft/Florence-2-large',
                 'total_frames': frame_count,
                 'frames_with_detections': len(detection_results),
+                'total_detections': total_detections,
                 'detection_results': detection_results
             }, f, indent=2)
         
@@ -259,6 +329,7 @@ def process_video_with_florence2(video_path, output_path):
             'results_path': results_path,
             'total_frames': frame_count,
             'frames_with_detections': len(detection_results),
+            'total_detections': total_detections,
             'model': 'microsoft/Florence-2-large'
         }
         

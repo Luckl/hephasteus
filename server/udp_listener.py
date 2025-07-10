@@ -27,7 +27,6 @@ def udp_listener_thread_func(camera_streams, socketio):
             try:
                 data, addr = udp_listener_socket.recvfrom(1024)
                 message = data.decode('utf-8').strip()
-                logger.debug(f"UDP listener received from {addr}: {message}")
                 
                 if message.startswith('ESP32_CAMERA:'):
                     parts = message.split(':')
@@ -54,7 +53,6 @@ def udp_listener_thread_func(camera_streams, socketio):
                         else:
                             # Update last seen time
                             camera_streams[camera_name].discovered_time = datetime.now()
-                            logger.debug(f"Camera {camera_name} still alive")
                             
             except socket.timeout:
                 continue  # Normal timeout, continue listening

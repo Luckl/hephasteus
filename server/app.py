@@ -15,7 +15,7 @@ from network_discovery import run_discovery
 from udp_listener import start_udp_listener, stop_udp_listener
 from video_recorder import get_video_recorder
 from video_analyzer import get_video_analyzer
-from florence2_detector import process_video_with_florence2
+from florence2_detector import process_video_with_florence2, get_florence2_model
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +41,18 @@ camera_streams = {}
 stream_threads = {}
 discovery_running = False  # Add this global variable
 scheduler_initialized = False  # Add this flag to prevent multiple initializations
+
+# Pre-load Florence 2 model on startup
+logger.info("Pre-loading Florence 2 model on startup...")
+try:
+    florence2_model, florence2_processor = get_florence2_model()
+    if florence2_model is not None and florence2_processor is not None:
+        logger.info("Florence 2 model loaded successfully on startup")
+    else:
+        logger.warning("Failed to load Florence 2 model on startup - will load on first use")
+except Exception as e:
+    logger.error(f"Error pre-loading Florence 2 model: {e}")
+    logger.info("Florence 2 model will be loaded on first use")
 
 
 
